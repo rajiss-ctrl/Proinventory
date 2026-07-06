@@ -1,0 +1,229 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+/* =========================================================
+   BRAND COLOR TOKENS
+   ========================================================= */
+@theme {
+  /* Brand */
+  --color-brand-primary:        #4f46e5;
+  --color-brand-primary-hover:  #4338ca;
+  --color-brand-primary-soft:   #6366f1;
+  --color-brand-secondary:      #7c3aed;
+  --color-brand-cyan:           #00e5ff;
+  --color-brand-magenta:        #ff3366;
+
+  /* App backgrounds */
+  --color-bg-app:               #070b14;
+  --color-bg-app-alt:           #0a0e17;
+  --color-bg-sidebar:           #0b1020;
+  --color-bg-header:            #0c1222;
+  --color-bg-panel:             #0f1629;
+  --color-bg-overlay:           rgba(7,11,20,0.72);
+
+  /* Surfaces */
+  --color-surface-1:            #0d1220;
+  --color-surface-2:            #111827;
+  --color-surface-3:            #151b2e;
+  --color-surface-4:            #1a2238;
+  --color-surface-elevated:     #131c31;
+  --color-surface-glass:        rgba(17,24,39,0.72);
+  --color-surface-glass-strong: rgba(15,22,41,0.84);
+
+  /* Text */
+  --color-text-primary:   #f8fafc;
+  --color-text-secondary: #cbd5e1;
+  --color-text-muted:     #94a3b8;
+  --color-text-faint:     #64748b;
+  --color-text-brand:     #6366f1;
+  --color-text-on-brand:  #ffffff;
+  --color-text-disabled:  #475569;
+
+  /* Borders */
+  --color-border-subtle:       rgba(255,255,255,0.06);
+  --color-border-soft:         rgba(255,255,255,0.08);
+  --color-border-medium:       rgba(255,255,255,0.12);
+  --color-border-strong:       rgba(255,255,255,0.18);
+  --color-border-brand:        rgba(99,102,241,0.35);
+  --color-border-brand-strong: rgba(99,102,241,0.55);
+  --color-border-cyan:         rgba(0,229,255,0.35);
+
+  /* Status */
+  --color-success:        #22c55e;
+  --color-success-soft:   rgba(34,197,94,0.14);
+  --color-success-border: rgba(34,197,94,0.32);
+  --color-warning:        #f59e0b;
+  --color-warning-soft:   rgba(245,158,11,0.14);
+  --color-warning-border: rgba(245,158,11,0.32);
+  --color-danger:         #ef4444;
+  --color-danger-soft:    rgba(239,68,68,0.14);
+  --color-danger-border:  rgba(239,68,68,0.32);
+  --color-info:           #38bdf8;
+  --color-info-soft:      rgba(56,189,248,0.14);
+  --color-info-border:    rgba(56,189,248,0.32);
+
+  /* Stock states */
+  --color-stock-in:          #22c55e;
+  --color-stock-in-soft:     rgba(34,197,94,0.14);
+  --color-stock-in-border:   rgba(34,197,94,0.32);
+  --color-stock-low:         #f59e0b;
+  --color-stock-low-soft:    rgba(245,158,11,0.14);
+  --color-stock-low-border:  rgba(245,158,11,0.32);
+  --color-stock-out:         #ef4444;
+  --color-stock-out-soft:    rgba(239,68,68,0.14);
+  --color-stock-out-border:  rgba(239,68,68,0.32);
+
+  /* Chart */
+  --color-chart-indigo: #6366f1;
+  --color-chart-purple: #7c3aed;
+  --color-chart-cyan:   #00e5ff;
+  --color-chart-blue:   #3b82f6;
+  --color-chart-green:  #22c55e;
+  --color-chart-amber:  #f59e0b;
+  --color-chart-red:    #ef4444;
+  --color-chart-pink:   #ec4899;
+
+  /* Nav */
+  --color-nav-item:          #cbd5e1;
+  --color-nav-item-hover:    #f8fafc;
+  --color-nav-item-active:   #ffffff;
+  --color-nav-icon:          #94a3b8;
+  --color-nav-icon-active:   #6366f1;
+  --color-nav-active-bg:     rgba(79,70,229,0.14);
+  --color-nav-active-border: rgba(99,102,241,0.35);
+
+  /* Inputs */
+  --color-input-bg:           #111827;
+  --color-input-bg-focus:     #151b2e;
+  --color-input-border:       rgba(255,255,255,0.08);
+  --color-input-border-focus: rgba(99,102,241,0.55);
+  --color-input-placeholder:  #64748b;
+  --color-input-text:         #f8fafc;
+  --color-input-icon:         #94a3b8;
+
+  /* Buttons */
+  --color-button-primary-text:    #ffffff;
+  --color-button-secondary-bg:    transparent;
+  --color-button-secondary-text:  #f8fafc;
+  --color-button-secondary-border:rgba(255,255,255,0.12);
+
+  /* Badge */
+  --color-badge-default-bg:     rgba(255,255,255,0.06);
+  --color-badge-default-text:   #cbd5e1;
+  --color-badge-default-border: rgba(255,255,255,0.08);
+
+  /* Glow / orbs */
+  --color-orb-highlight: rgba(140,130,255,0.55);
+  --color-orb-mid:       rgba(99,102,241,0.38);
+  --color-orb-deep:      rgba(79,70,229,0.28);
+  --color-glow-purple:   rgba(124,58,237,0.22);
+  --color-glow-indigo:   rgba(99,102,241,0.38);
+  --color-glow-cyan:     rgba(0,229,255,0.08);
+
+  /* Shadows */
+  --shadow-card: 0 12px 40px rgba(0,0,0,0.28);
+  --shadow-soft: 0 8px 30px rgba(0,0,0,0.22);
+  --shadow-glow: 0 0 40px rgba(99,102,241,0.25);
+}
+
+/* =========================================================
+   BASE RESET
+   ========================================================= */
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background-color: var(--color-bg-app);
+    color: var(--color-text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-brand-primary) var(--color-surface-2);
+  }
+
+  ::-webkit-scrollbar        { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb  { background: var(--color-brand-primary); border-radius: 999px; }
+  ::-webkit-scrollbar-track  { background: var(--color-surface-2); }
+}
+
+/* =========================================================
+   UTILITY CLASSES
+   ========================================================= */
+
+/* Glassmorphism card */
+.glass-card {
+  background: var(--color-surface-glass);
+  border: 1px solid var(--color-border-soft);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* Glow ring on interactive elements */
+.glow-ring:focus-visible {
+  outline: 2px solid var(--color-brand-primary-soft);
+  outline-offset: 2px;
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #6366f1 0%, #00e5ff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Hero radial glow */
+.hero-glow {
+  background: radial-gradient(
+    ellipse 80% 60% at 60% 40%,
+    rgba(99, 102, 241, 0.18) 0%,
+    rgba(124, 58, 237, 0.10) 40%,
+    transparent 70%
+  );
+}
+
+/* Dashboard screenshot glow border */
+.screenshot-glow {
+  box-shadow:
+    0 0 0 1px rgba(99,102,241,0.25),
+    0 24px 80px rgba(0,0,0,0.55),
+    0 0 80px rgba(99,102,241,0.12);
+}
+
+/* Animated gradient border */
+@keyframes border-spin {
+  to { --border-angle: 360deg; }
+}
+
+/* Subtle dot grid background */
+.dot-grid {
+  background-image: radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* Fade up animation */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up {
+  animation: fade-up 0.6s ease forwards;
+}
+
+/* Stagger helpers */
+.delay-100 { animation-delay: 100ms; }
+.delay-200 { animation-delay: 200ms; }
+.delay-300 { animation-delay: 300ms; }
+.delay-400 { animation-delay: 400ms; }
+.delay-500 { animation-delay: 500ms; }
