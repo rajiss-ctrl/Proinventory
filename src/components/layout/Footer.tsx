@@ -223,7 +223,23 @@ const Footer = () => {
           style={{ borderTop: "1px solid var(--color-border-subtle)" }}
         >
           <p className="text-xs" style={{ color: "var(--color-text-faint)" }}>
-            © {new Date().getFullYear()} ProInventory. All rights reserved.
+            &copy; {new Date().getFullYear()} ProInventory. All rights reserved. Built by{" "}
+            <a
+              href="https://github.com/rajiss-ctrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="transition-colors font-semibold"
+              style={{ color: "var(--color-brand-primary-soft)" }}
+              onMouseEnter={(e) =>
+                ((e.currentTarget as HTMLElement).style.color = "var(--color-text-primary)")
+              }
+              onMouseLeave={(e) =>
+                ((e.currentTarget as HTMLElement).style.color =
+                  "var(--color-brand-primary-soft)")
+              }
+            >
+              RajisSaraF.Dev
+            </a>
           </p>
           <div className="flex items-center gap-5 flex-wrap justify-center">
             {LEGAL_LINKS.map((item) => (

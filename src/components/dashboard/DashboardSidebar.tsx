@@ -22,9 +22,10 @@ interface DashboardSidebarProps {
   onNewItem: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  activeView?: "dashboard" | "add-product";
 }
 
-const DashboardSidebar = ({ onNewItem, collapsed, onToggleCollapse }: DashboardSidebarProps) => {
+const DashboardSidebar = ({ onNewItem, collapsed, onToggleCollapse, activeView = "dashboard" }: DashboardSidebarProps) => {
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -53,7 +54,11 @@ const DashboardSidebar = ({ onNewItem, collapsed, onToggleCollapse }: DashboardS
   ];
 
   const NavLink = ({ item }: { item: NavItem }) => {
-    const active = item.to ? location.pathname === item.to && item.label === "Dashboard" : false;
+    const isProducts = item.label === "Products";
+    const isDashboard = item.label === "Dashboard";
+    const active =
+      (isDashboard && activeView === "dashboard" && location.pathname === item.to) ||
+      (isProducts && activeView === "add-product");
     return (
       <li>
         {item.to ? (
@@ -158,6 +163,37 @@ const DashboardSidebar = ({ onNewItem, collapsed, onToggleCollapse }: DashboardS
         <ul className="space-y-0.5">
           {bottomNav.map((item) => <NavLink key={item.label} item={item} />)}
         </ul>
+
+        {/* Upgrade to Pro card */}
+        {!collapsed && (
+          <div
+            className="mx-2 mb-3 p-3 rounded-xl"
+            style={{
+              background: "linear-gradient(135deg, #1e1b4b 0%, #2e1065 100%)",
+              border: "1px solid var(--color-border-brand)",
+            }}
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-base">👑</span>
+              <p className="text-xs font-bold" style={{ color: "var(--color-text-primary)" }}>
+                Upgrade to Pro
+              </p>
+            </div>
+            <p className="text-[11px] mb-3 leading-snug" style={{ color: "var(--color-text-muted)" }}>
+              Unlock advanced features and reports.
+            </p>
+            <button
+              className="w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+              style={{
+                background: "var(--color-brand-primary)",
+                color: "white",
+              }}
+            >
+              Upgrade Now
+              <span>→</span>
+            </button>
+          </div>
+        )}
 
         {/* Collapse toggle label */}
         {!collapsed && (

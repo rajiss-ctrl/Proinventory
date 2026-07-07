@@ -3,7 +3,7 @@ import { useSelector } from "react-redux";
 import { MdAttachMoney, MdInventory2, MdRemoveShoppingCart, MdShoppingCart, MdAdd } from "react-icons/md";
 import DashboardSidebar from "../components/dashboard/DashboardSidebar";
 import DashboardHeader from "../components/dashboard/DashboardHeader";
-import AddStockModal from "../components/dashboard/AddStockModal";
+import AddProductView from "../components/dashboard/AddProductView";
 import StockStateEditor from "../components/dashboard/StockStateEditor";
 import {
   StatCard,
@@ -16,6 +16,8 @@ import {
 import { RootState } from "../app/store";
 import { Product } from "../types";
 
+type DashView = "dashboard" | "add-product";
+
 /* ── Synthetic sparkline data (realistic-looking 8-point curves) ── */
 const SPARKS = {
   value:   [320,380,410,370,450,420,490,510],
@@ -26,7 +28,7 @@ const SPARKS = {
 
 const DashboardPage = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [showAddModal, setShowAddModal]         = useState(false);
+  const [view, setView]                         = useState<DashView>("dashboard");
   const [editItemId, setEditItemId]             = useState<string | null>(null);
 
   const products = useSelector((s: RootState) => s.stock.productData);
@@ -51,9 +53,10 @@ const DashboardPage = () => {
     >
       {/* ── Sidebar ── */}
       <DashboardSidebar
-        onNewItem={() => setShowAddModal(true)}
+        onNewItem={() => setView("add-product")}
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed((p) => !p)}
+        activeView={view}
       />
 
       {/* ── Top header ── */}
@@ -64,7 +67,15 @@ const DashboardPage = () => {
         className="transition-all duration-300 pt-14 min-h-screen"
         style={{ marginLeft: `${sideW}px` }}
       >
-        <div className="p-5 flex flex-col gap-5">
+        {/* ── ADD PRODUCT VIEW ── */}
+        {view === "add-product" ? (
+          <AddProductView
+            onCancel={() => setView("dashboard")}
+            onSaved={() => setView("dashboard")}
+          />
+        ) : (
+          /* ── DASHBOARD VIEW ── */
+          <div className="p-5 flex flex-col gap-5">
 
           {/* ── Stat cards row ── */}
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -125,35 +136,33 @@ const DashboardPage = () => {
           {/* ── Products overview table (full width) ── */}
           <ProductsTable
             onEdit={(id) => setEditItemId(id)}
-            onAdd={() => setShowAddModal(true)}
+            onAdd={() => setView("add-product")}
           />
 
         </div>
+        )} {/* end dashboard view */}
       </main>
 
-      {/* ── Add Product FAB ── */}
-      <button
-        onClick={() => setShowAddModal(true)}
-        className="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-4 py-3 rounded-full text-sm font-semibold shadow-lg transition-all"
-        style={{
-          background: "var(--color-brand-primary)",
-          color: "white",
-          boxShadow: "var(--shadow-glow)",
-        }}
-        onMouseEnter={(e) =>
-          ((e.currentTarget as HTMLElement).style.background = "var(--color-brand-primary-hover)")
-        }
-        onMouseLeave={(e) =>
-          ((e.currentTarget as HTMLElement).style.background = "var(--color-brand-primary)")
-        }
-      >
-        <MdAdd size={20} />
-        Add Product
-      </button>
-
-      {/* ── Add stock modal ── */}
-      {showAddModal && (
-        <AddStockModal onClose={() => setShowAddModal(false)} />
+      {/* ── Add Product FAB — only shown on dashboard view ── */}
+      {view === "dashboard" && (
+        <button
+          onClick={() => setView("add-product")}
+          className="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-4 py-3 rounded-full text-sm font-semibold shadow-lg transition-all"
+          style={{
+            background: "var(--color-brand-primary)",
+            color: "white",
+            boxShadow: "var(--shadow-glow)",
+          }}
+          onMouseEnter={(e) =>
+            ((e.currentTarget as HTMLElement).style.background = "var(--color-brand-primary-hover)")
+          }
+          onMouseLeave={(e) =>
+            ((e.currentTarget as HTMLElement).style.background = "var(--color-brand-primary)")
+          }
+        >
+          <MdAdd size={20} />
+          Add Product
+        </button>
       )}
 
       {/* ── Edit stock editor ── */}
