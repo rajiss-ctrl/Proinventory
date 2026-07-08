@@ -1,4 +1,23 @@
-# Logs
+# ── Dependencies ────────────────────────────────────────────
+node_modules
+
+# ── Build output ─────────────────────────────────────────────
+dist
+dist-ssr
+
+# ── Environment / secrets — NEVER commit these ───────────────
+.env
+.env.local
+.env.development
+.env.development.local
+.env.production
+.env.production.local
+.env.test
+.env.test.local
+*.env
+*.env.local
+
+# ── Logs ─────────────────────────────────────────────────────
 logs
 *.log
 npm-debug.log*
@@ -7,20 +26,19 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
+# ── Editor directories ───────────────────────────────────────
 .vscode/*
 !.vscode/extensions.json
 .idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
-.env
-*.env
+
+# ── OS files ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Vite ─────────────────────────────────────────────────────
+*.local
