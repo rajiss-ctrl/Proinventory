@@ -12,7 +12,7 @@ import { yupResolver } from "@hookform/resolvers/yup";
 import { MdEmail, MdLock, MdVisibility, MdVisibilityOff } from "react-icons/md";
 import { FcGoogle } from "react-icons/fc";
 import { auth } from "../services/firebase";
-import { setCurrentUser } from "../features/auth/authSlice";
+import { setCurrentUser, fetchUserProfile } from "../features/auth/authSlice";
 import AuthLeftPanel from "../components/layout/AuthLeftPanel";
 
 /* ─── Types ─────────────────────────────────────────────── */
@@ -27,7 +27,7 @@ const schema = yup.object({
 });
 
 /* ─── Constants ─────────────────────────────────────────── */
-const GUEST = { email: "stocktrack.guest@gmail.com", pass: "stocktrack02!" };
+const GUEST = { email: import.meta.env.VITE_GUEST_EMAIL as string, pass: import.meta.env.VITE_GUEST_PASSWORD as string };
 
 const INPUT_BASE =
   "w-full rounded-xl px-4 py-3 pl-11 text-sm outline-none transition-all";
@@ -96,6 +96,9 @@ const LoginPage = () => {
     dispatch(setCurrentUser(payload));
     if (remember) localStorage.setItem("currentUser", JSON.stringify(payload));
     else          sessionStorage.setItem("currentUser", JSON.stringify(payload));
+    // Fetch users/{uid} to get companyId → triggers App.tsx company listeners
+    dispatch(fetchUserProfile(user.uid));
+    console.log("✅ [Login] Signed in, fetching user profile for uid:", user.uid);
     navigate("/dashboard");
   };
 
@@ -109,10 +112,33 @@ const LoginPage = () => {
 
   /* ── Guest login ── */
   const handleGuest = async () => {
-    setLoading(true); setServerErr("");
-    try   { await login(GUEST.email, GUEST.pass); }
-    catch { setServerErr("Guest login unavailable right now. Try again later."); }
-    finally { setLoading(false); }
+    setLoading(true);
+    setServerErr("");
+    try {
+      const { user } = await signInWithEmailAndPassword(auth, GUEST.email, GUEST.pass);
+
+      // Set role: "guest" BEFORE navigating — RoleRoute reads this immediately
+      const payload = {
+        uid:         user.uid,
+        email:       user.email ?? "",
+        role:        "guest" as const,
+        companyId:   `guest_company_${user.uid}`,
+        displayName: "Guest User",
+        isSuperAdmin: false,
+      };
+      dispatch(setCurrentUser(payload));
+      sessionStorage.setItem("currentUser", JSON.stringify(payload));
+
+      // Do NOT call fetchUserProfile for guest — it has no users/{uid} doc
+      // and would overwrite the guest role we just set.
+      console.log("✅ [Guest] Signed in as guest, role: guest → /owner");
+      navigate("/owner");
+    } catch (err) {
+      console.error("❌ [Guest] Login failed:", err);
+      setServerErr("Guest login failed. Please check your connection and try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   /* ── Google sign-in ── */

@@ -5,7 +5,7 @@ import {
   GoogleAuthProvider,
   signInWithPopup,
 } from "firebase/auth";
-import { addDoc, collection } from "firebase/firestore";
+import { setDoc, doc as docRef } from "firebase/firestore";
 import {
   MdPerson, MdEmail, MdLock, MdBusiness,
   MdPhone, MdPeople, MdVisibility, MdVisibilityOff, MdShield,
@@ -156,21 +156,70 @@ const RegisterPage = () => {
     if (!validate()) return;
     setLoading(true); setServerErr("");
     try {
+      // 1. Create Firebase Auth user
       const { user } = await createUserWithEmailAndPassword(auth, form.email, form.password);
-      await addDoc(collection(db, "users"), {
+      console.log("✅ [Register] Firebase Auth user created:", user.uid);
+
+      // 2. Generate a companyId slug from company name
+      const companySlug = form.company
+        ? form.company.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")
+        : `company-${user.uid.slice(0, 6)}`;
+      const companyId = `cmp_${companySlug}_${user.uid.slice(0, 6)}`;
+
+      // 3. Write companies/{companyId} document
+      const companyData = {
+        name:      form.company || form.fullName + "'s Company",
+        slug:      companySlug,
+        email:     form.email,
+        phone:     form.phone     || "",
+        industry:  "",
+        plan:      "free",
+        status:    "active",
+        ownerId:   user.uid,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      await setDoc(docRef(db, "companies", companyId), companyData);
+      console.log("✅ [Register] companies/{companyId} written:", { companyId, ...companyData });
+
+      // 4. Write users/{uid} global profile
+      const userProfile = {
         uid:          user.uid,
-        fullName:     form.fullName,
-        email:        form.email,
-        company:      form.company,
-        phone:        form.phone,
-        role:         form.role,
+        email:        user.email ?? "",
+        displayName:  form.fullName,
+        companyId,
+        role:         "company_owner",
+        status:       "active",
+        isSuperAdmin: false,
+        permissions:  { canManageProducts: true, canManageOrders: true, canViewReports: true },
         authProvider: "local",
         createdAt:    new Date(),
-      });
-      dispatch(setCurrentUser({ uid: user.uid, email: user.email ?? "" }));
-      sessionStorage.setItem("currentUser", JSON.stringify({ uid: user.uid, email: user.email }));
+        updatedAt:    new Date(),
+      };
+      await setDoc(docRef(db, "users", user.uid), userProfile);
+      console.log("✅ [Register] users/{uid} written:", userProfile);
+
+      // 5. Write companies/{companyId}/users/{uid} subcollection
+      const companyUserData = {
+        uid:         user.uid,
+        email:       user.email ?? "",
+        displayName: form.fullName,
+        companyId,
+        role:        "company_owner",
+        status:      "active",
+        createdAt:   new Date(),
+        updatedAt:   new Date(),
+      };
+      await setDoc(docRef(db, "companies", companyId, "users", user.uid), companyUserData);
+      console.log("✅ [Register] companies/{companyId}/users/{uid} written:", companyUserData);
+
+      // 6. Dispatch to Redux
+      dispatch(setCurrentUser({ uid: user.uid, email: user.email ?? "", companyId }));
+      sessionStorage.setItem("currentUser", JSON.stringify({ uid: user.uid, email: user.email, companyId }));
+
       navigate("/dashboard");
     } catch (err: any) {
+      console.error("❌ [Register] Error:", err);
       if (err.code === "auth/email-already-in-use") {
         setServerErr("This email is already registered. Try logging in.");
       } else {

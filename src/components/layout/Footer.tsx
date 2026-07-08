@@ -102,8 +102,8 @@ const Footer = () => {
 
           {/* Brand + socials */}
           <div className="col-span-2 sm:col-span-3 lg:col-span-1">
-            <Link to="/" className="flex items-center gap-2 mb-3">
-              <img src={Logo} alt="StockTrack" className="w-7 h-7 rounded-lg" />
+            <Link to="/" className="flex items-center mb-3">
+              <img src={Logo} alt="StockTrack" className="w-12 h-12 rounded-lg" />
               <span className="text-white font-bold text-base">
                 Stock
                 <span style={{ color: "var(--color-brand-primary-soft)" }}>

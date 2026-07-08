@@ -1,0 +1,313 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* =========================================================
+       HELPER FUNCTIONS
+    ========================================================= */
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userDocPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function userExists() {
+      return signedIn() && exists(userDocPath());
+    }
+
+    function userData() {
+      return get(userDocPath()).data;
+    }
+
+    function isActiveUser() {
+      return userExists() && userData().status == "active";
+    }
+
+    // ── Platform-wide super admin ──────────────────────────
+    function isSuperAdmin() {
+      return isActiveUser() && userData().isSuperAdmin == true;
+    }
+
+    // ── Company-scoped helpers ─────────────────────────────
+    function userCompanyId() {
+      return userData().companyId;
+    }
+
+    function userRole() {
+      return userData().role;
+    }
+
+    function belongsToCompany(companyId) {
+      return isActiveUser() && userCompanyId() == companyId;
+    }
+
+    // Business owner OR guest (guest has same rights as owner)
+    function isOwner() {
+      return isActiveUser() && (
+        userRole() == "company_owner" || userRole() == "guest"
+      );
+    }
+
+    function isCompanyAdmin() {
+      return isActiveUser() && userRole() == "company_admin";
+    }
+
+    function isStaff() {
+      return isActiveUser() && userRole() == "staff";
+    }
+
+    function isOwnerOrAdmin() {
+      return isOwner() || isCompanyAdmin();
+    }
+
+    // ── Module permission helpers ──────────────────────────
+    function canRead(module) {
+      return isSuperAdmin()
+        || isOwnerOrAdmin()
+        || userData().permissions[module].read == true;
+    }
+
+    function canWrite(module) {
+      return isSuperAdmin()
+        || isOwnerOrAdmin()
+        || userData().permissions[module].write == true;
+    }
+
+    function canDelete(module) {
+      return isSuperAdmin()
+        || isOwner()
+        || userData().permissions[module].delete == true;
+    }
+
+    /* =========================================================
+       GLOBAL USER PROFILES   /users/{uid}
+       ─────────────────────────────────────────────────────────
+       Structure:
+         uid, email, displayName, companyId,
+         role, status, isSuperAdmin, permissions
+    ========================================================= */
+    match /users/{uid} {
+      // User can read own profile; super admin reads all
+      allow read: if signedIn() && (
+        request.auth.uid == uid || isSuperAdmin()
+      );
+
+      // Self-registration during onboarding
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.uid == request.auth.uid
+        // Prevent self-elevating to super_admin
+        && request.resource.data.isSuperAdmin == false
+        && request.resource.data.role != "super_admin";
+
+      // User can update own safe profile fields only
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        // Immutable fields
+        && request.resource.data.uid         == resource.data.uid
+        && request.resource.data.companyId   == resource.data.companyId
+        && request.resource.data.role        == resource.data.role
+        && request.resource.data.isSuperAdmin == resource.data.isSuperAdmin
+        && request.resource.data.permissions == resource.data.permissions;
+
+      // Owner/admin can update their company members' profiles
+      allow update: if isSuperAdmin()
+        || (isOwnerOrAdmin() && userCompanyId() == resource.data.companyId);
+
+      // Only super admin deletes platform users
+      allow delete: if isSuperAdmin();
+    }
+
+    /* =========================================================
+       COMPANIES   /companies/{companyId}
+    ========================================================= */
+    match /companies/{companyId} {
+      allow read: if isSuperAdmin()
+        || belongsToCompany(companyId);
+
+      // Company creation is handled server-side (registration flow).
+      // Allow the registering user to create their own company doc.
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid;
+
+      // Owner (+ admin) can update their own company; super admin updates any
+      allow update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+
+      // Only super admin deletes companies
+      allow delete: if isSuperAdmin();
+    }
+
+    /* =========================================================
+       COMPANY USERS   /companies/{companyId}/users/{uid}
+    ========================================================= */
+    match /companies/{companyId}/users/{uid} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && (
+          request.auth.uid == uid
+          || canRead("users")
+        ));
+
+      // Owner/admin can add staff; super admin can add anyone
+      allow create: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+
+      // Owner/admin can update roles; staff cannot
+      allow update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+
+      // Owner removes staff; super admin removes anyone
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    /* =========================================================
+       PRODUCTS   /companies/{companyId}/products/{productId}
+       ─────────────────────────────────────────────────────────
+       Permissions:
+         super_admin     → full CRUD
+         company_owner   → full CRUD
+         guest           → full CRUD (demo)
+         company_admin   → read + write, no delete
+         staff           → read + write (add), NO delete/update
+    ========================================================= */
+    match /companies/{companyId}/products/{productId} {
+      // All company members can read
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && canRead("products"));
+
+      // Owner, admin, staff can CREATE (add new product)
+      allow create: if isSuperAdmin()
+        || (belongsToCompany(companyId) && canWrite("products"));
+
+      // Only owner/admin can UPDATE (edit existing product)
+      allow update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+
+      // Only owner (+ super admin) can DELETE
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    /* =========================================================
+       CATEGORIES   /companies/{companyId}/categories/{id}
+    ========================================================= */
+    match /companies/{companyId}/categories/{categoryId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && canRead("categories"));
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    /* =========================================================
+       ORDERS   /companies/{companyId}/orders/{orderId}
+    ========================================================= */
+    match /companies/{companyId}/orders/{orderId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && canRead("orders"));
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && canWrite("orders"));
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    /* =========================================================
+       PURCHASE ORDERS   /companies/{companyId}/purchaseOrders/{id}
+    ========================================================= */
+    match /companies/{companyId}/purchaseOrders/{poId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && canRead("purchaseOrders"));
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    /* =========================================================
+       SUPPLIERS   /companies/{companyId}/suppliers/{id}
+    ========================================================= */
+    match /companies/{companyId}/suppliers/{supplierId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && canRead("suppliers"));
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    /* =========================================================
+       CUSTOMERS   /companies/{companyId}/customers/{id}
+    ========================================================= */
+    match /companies/{companyId}/customers/{customerId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && canRead("customers"));
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && canWrite("customers"));
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    /* =========================================================
+       STOCK MOVEMENTS   /companies/{companyId}/stockMovements/{id}
+       History is append-only — never edit or delete from client.
+    ========================================================= */
+    match /companies/{companyId}/stockMovements/{movementId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && canRead("stock"));
+      allow create: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow update: if false;
+      allow delete: if isSuperAdmin();
+    }
+
+    /* =========================================================
+       WAREHOUSES   /companies/{companyId}/warehouses/{id}
+    ========================================================= */
+    match /companies/{companyId}/warehouses/{warehouseId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && canRead("stock"));
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    /* =========================================================
+       REPORTS   /companies/{companyId}/reports/{id}
+    ========================================================= */
+    match /companies/{companyId}/reports/{reportId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow delete: if isSuperAdmin();
+    }
+
+    /* =========================================================
+       SETTINGS   /companies/{companyId}/settings/{id}
+    ========================================================= */
+    match /companies/{companyId}/settings/{settingId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+      allow delete: if isSuperAdmin();
+    }
+
+    /* =========================================================
+       AUDIT LOGS   /companies/{companyId}/auditLogs/{id}
+       Write only from server-side functions.
+    ========================================================= */
+    match /companies/{companyId}/auditLogs/{logId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+  }
+}

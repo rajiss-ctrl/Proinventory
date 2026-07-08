@@ -49,10 +49,10 @@ const Navbar = () => {
         <div className="flex items-center justify-between h-16">
 
           {/* ── Logo ── */}
-          <Link to="/" className="flex items-center gap-2.5 shrink-0">
-            <img src={Logo} alt="StockTrack" className="w-8 h-8 rounded-lg" />
+          <Link to="/" className="flex items-center shrink-0">
+            <img src={Logo} alt="StockTrack" className="w-12 h-12 rounded-lg" />
             <span className="text-white font-bold text-lg tracking-tight">
-              Stock<span style={{ color: "var(--color-brand-primary-soft)" }}>Track</span>
+              Pro<span style={{ color: "var(--color-brand-primary-soft)" }}>Inventory</span>
             </span>
           </Link>
 

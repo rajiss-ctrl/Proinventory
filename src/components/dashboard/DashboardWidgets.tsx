@@ -434,11 +434,12 @@ export const RecentActivityPanel = () => {
    PRODUCTS OVERVIEW TABLE
 ───────────────────────────────────────────────────────────── */
 interface ProductsTableProps {
-  onEdit: (id: string) => void;
-  onAdd: () => void;
+  onEdit?: (id: string) => void;
+  onAdd?:  () => void;
+  readOnly?: boolean;
 }
 
-export const ProductsTable = ({ onEdit, onAdd }: ProductsTableProps) => {
+export const ProductsTable = ({ onEdit, onAdd, readOnly = false }: ProductsTableProps) => {
   const products = useSelector((s: RootState) => s.stock.productData);
 
   const FALLBACK = [
@@ -569,18 +570,24 @@ export const ProductsTable = ({ onEdit, onAdd }: ProductsTableProps) => {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => onEdit(item.id)}
-                        className="w-6 h-6 flex items-center justify-center rounded"
-                        style={{ color: "var(--color-text-muted)" }}
-                      >
-                        <FiEdit2 size={12} />
-                      </button>
-                      <button className="w-6 h-6 flex items-center justify-center rounded" style={{ color: "var(--color-text-muted)" }}>
-                        <FiMoreHorizontal size={12} />
-                      </button>
-                    </div>
+                    {readOnly ? (
+                      <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>View only</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        {onEdit && (
+                          <button
+                            onClick={() => onEdit(item.id)}
+                            className="w-6 h-6 flex items-center justify-center rounded"
+                            style={{ color: "var(--color-text-muted)" }}
+                          >
+                            <FiEdit2 size={12} />
+                          </button>
+                        )}
+                        <button className="w-6 h-6 flex items-center justify-center rounded" style={{ color: "var(--color-text-muted)" }}>
+                          <FiMoreHorizontal size={12} />
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               );

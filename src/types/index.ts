@@ -8,90 +8,336 @@ export interface FirebaseTimestamp {
   nanoseconds: number;
 }
 
+// ─── Role & Plan enums ───────────────────────────────────────────────────────
+
+export type UserRole =
+  | "super_admin"       // platform-wide admin — sees everything
+  | "company_owner"     // business owner — full access to own company
+  | "company_admin"     // delegated admin inside a company
+  | "staff"             // can view + add products, cannot delete/update
+  | "guest";            // same permissions as company_owner (demo)
+
+export type SubscriptionPlan = "starter" | "most_popular" | "enterprise";
+
+export type UserStatus = "active" | "inactive" | "suspended";
+
+// ─── Granular module permissions ─────────────────────────────────────────────
+
+export interface ModulePermission {
+  read:   boolean;
+  write:  boolean;
+  delete: boolean;
+}
+
+export interface UserPermissions {
+  dashboard:      { read: boolean };
+  products:       ModulePermission;
+  categories:     ModulePermission;
+  orders:         ModulePermission;
+  purchaseOrders: ModulePermission;
+  stock:          ModulePermission & { adjust: boolean };
+  suppliers:      ModulePermission;
+  customers:      ModulePermission;
+  reports:        ModulePermission;
+  settings:       ModulePermission;
+  users:          ModulePermission;
+}
+
+/** Default permissions per role */
+export const DEFAULT_PERMISSIONS: Record<UserRole, UserPermissions> = {
+  super_admin: {
+    dashboard:      { read: true },
+    products:       { read: true, write: true, delete: true },
+    categories:     { read: true, write: true, delete: true },
+    orders:         { read: true, write: true, delete: true },
+    purchaseOrders: { read: true, write: true, delete: true },
+    stock:          { read: true, write: true, delete: true, adjust: true },
+    suppliers:      { read: true, write: true, delete: true },
+    customers:      { read: true, write: true, delete: true },
+    reports:        { read: true, write: true, delete: true },
+    settings:       { read: true, write: true, delete: true },
+    users:          { read: true, write: true, delete: true },
+  },
+  company_owner: {
+    dashboard:      { read: true },
+    products:       { read: true, write: true, delete: true },
+    categories:     { read: true, write: true, delete: true },
+    orders:         { read: true, write: true, delete: true },
+    purchaseOrders: { read: true, write: true, delete: true },
+    stock:          { read: true, write: true, delete: true, adjust: true },
+    suppliers:      { read: true, write: true, delete: true },
+    customers:      { read: true, write: true, delete: true },
+    reports:        { read: true, write: true, delete: false },
+    settings:       { read: true, write: true, delete: false },
+    users:          { read: true, write: true, delete: true },
+  },
+  company_admin: {
+    dashboard:      { read: true },
+    products:       { read: true, write: true, delete: false },
+    categories:     { read: true, write: true, delete: false },
+    orders:         { read: true, write: true, delete: false },
+    purchaseOrders: { read: true, write: true, delete: false },
+    stock:          { read: true, write: true, delete: false, adjust: true },
+    suppliers:      { read: true, write: false, delete: false },
+    customers:      { read: true, write: true, delete: false },
+    reports:        { read: true, write: false, delete: false },
+    settings:       { read: true, write: false, delete: false },
+    users:          { read: true, write: true, delete: false },
+  },
+  // Guest = same as company_owner (full demo access)
+  guest: {
+    dashboard:      { read: true },
+    products:       { read: true, write: true, delete: true },
+    categories:     { read: true, write: true, delete: true },
+    orders:         { read: true, write: true, delete: true },
+    purchaseOrders: { read: true, write: true, delete: true },
+    stock:          { read: true, write: true, delete: true, adjust: true },
+    suppliers:      { read: true, write: true, delete: true },
+    customers:      { read: true, write: true, delete: true },
+    reports:        { read: true, write: true, delete: false },
+    settings:       { read: true, write: true, delete: false },
+    users:          { read: true, write: true, delete: true },
+  },
+  staff: {
+    dashboard:      { read: true },
+    products:       { read: true, write: true, delete: false },
+    categories:     { read: true, write: false, delete: false },
+    orders:         { read: true, write: false, delete: false },
+    purchaseOrders: { read: false, write: false, delete: false },
+    stock:          { read: true, write: false, delete: false, adjust: false },
+    suppliers:      { read: false, write: false, delete: false },
+    customers:      { read: false, write: false, delete: false },
+    reports:        { read: false, write: false, delete: false },
+    settings:       { read: false, write: false, delete: false },
+    users:          { read: false, write: false, delete: false },
+  },
+};
+
+// ─── Subscription plan definitions ──────────────────────────────────────────
+
+export interface PlanFeature {
+  label: string;
+  included: boolean;
+}
+
+export interface PlanDefinition {
+  id: SubscriptionPlan;
+  name: string;
+  price: number;
+  period: string;
+  badge?: string;
+  highlighted: boolean;
+  maxProducts: number | "unlimited";
+  maxUsers: number | "unlimited";
+  maxWarehouses: number | "unlimited";
+  features: PlanFeature[];
+}
+
+export const PLANS: PlanDefinition[] = [
+  {
+    id: "starter",
+    name: "Starter",
+    price: 29,
+    period: "month",
+    highlighted: false,
+    maxProducts: 1000,
+    maxUsers: 1,
+    maxWarehouses: 2,
+    features: [
+      { label: "Up to 1,000 products",  included: true  },
+      { label: "1 user included",        included: true  },
+      { label: "2 warehouses",           included: true  },
+      { label: "Basic reports",          included: true  },
+      { label: "Email support",          included: true  },
+      { label: "Advanced analytics",     included: false },
+      { label: "API access",             included: false },
+      { label: "Priority support",       included: false },
+    ],
+  },
+  {
+    id: "most_popular",
+    name: "Professional",
+    price: 79,
+    period: "month",
+    badge: "Most Popular",
+    highlighted: true,
+    maxProducts: 10000,
+    maxUsers: 5,
+    maxWarehouses: 10,
+    features: [
+      { label: "Up to 10,000 products",  included: true },
+      { label: "5 users included",       included: true },
+      { label: "10 warehouses",          included: true },
+      { label: "Advanced reports",       included: true },
+      { label: "Priority support",       included: true },
+      { label: "API access",             included: true },
+      { label: "Advanced analytics",     included: true },
+      { label: "Dedicated manager",      included: false },
+    ],
+  },
+  {
+    id: "enterprise",
+    name: "Enterprise",
+    price: 199,
+    period: "month",
+    highlighted: false,
+    maxProducts: "unlimited",
+    maxUsers: "unlimited",
+    maxWarehouses: "unlimited",
+    features: [
+      { label: "Unlimited products",     included: true },
+      { label: "Unlimited users",        included: true },
+      { label: "Unlimited warehouses",   included: true },
+      { label: "Custom reports",         included: true },
+      { label: "Dedicated support",      included: true },
+      { label: "SLA & Onboarding",       included: true },
+      { label: "API access",             included: true },
+      { label: "Advanced analytics",     included: true },
+    ],
+  },
+];
+
 // ─── Domain models ───────────────────────────────────────────────────────────
 
-export interface Product {
-  id: string;
-  user_id: string;
-  product_name: string;
-  product_Qty: number;
-  product_Price: number;
-  product_description?: string;
-  size: string;
-  img?: string;
-  initialStock?: number;
-  timestamp?: FirebaseTimestamp | Date | null;
-  dateStamp?: string;
+/** users/{uid} — Global user profile */
+export interface UserProfile {
+  uid:          string;
+  email:        string;
+  displayName:  string;
+  companyId:    string;
+  role:         UserRole;
+  status:       UserStatus;
+  isSuperAdmin: boolean;
+  permissions:  UserPermissions;
+  createdAt:    FirebaseTimestamp | Date;
+  updatedAt:    FirebaseTimestamp | Date;
 }
 
-export interface BusinessProfile {
-  id: string;
-  user_id: string;
-  businessName: string;
-  businessType?: string;
-  businessAddress: string;
-  about?: string;
-  mission?: string;
-  logo?: string;
+/** companies/{companyId} */
+export interface Company {
+  id:        string;
+  name:      string;
+  slug:      string;
+  email:     string;
+  phone?:    string;
+  industry?: string;
+  plan:      SubscriptionPlan;
+  status:    "active" | "inactive";
+  ownerId:   string;
+  createdAt: FirebaseTimestamp | Date;
+  updatedAt: FirebaseTimestamp | Date;
 }
+
+/** companies/{companyId}/users/{uid} */
+export interface CompanyUser {
+  uid:         string;
+  email:       string;
+  displayName: string;
+  companyId:   string;
+  role:        UserRole;
+  status:      UserStatus;
+  permissions: UserPermissions;
+  createdAt:   FirebaseTimestamp | Date;
+  updatedAt:   FirebaseTimestamp | Date;
+}
+
+/** companies/{companyId}/categories/{categoryId} */
+export interface Category {
+  id:           string;
+  name:         string;
+  description?: string;
+  companyId:    string;
+  createdBy:    string;
+  createdAt:    FirebaseTimestamp | Date;
+  updatedAt:    FirebaseTimestamp | Date;
+}
+
+/** companies/{companyId}/products/{productId} */
+export interface Product {
+  id:            string;
+  name:          string;
+  sku:           string;
+  categoryId:    string;
+  categoryName:  string;
+  price:         number;
+  stockQuantity: number;
+  status:        "in_stock" | "low_stock" | "out_of_stock";
+  imageUrl?:     string;
+  companyId:     string;
+  createdBy:     string;
+  createdAt:     FirebaseTimestamp | Date;
+  updatedAt:     FirebaseTimestamp | Date;
+  // Legacy compat
+  product_name?:        string;
+  product_Qty?:         number;
+  product_Price?:       number;
+  product_description?: string;
+  size?:                string;
+  img?:                 string;
+}
+
+export interface OrderItem { productId: string; name: string; qty: number; price: number; }
+export interface Order {
+  id:           string;
+  orderNumber:  string;
+  customerName: string;
+  items:        OrderItem[];
+  totalAmount:  number;
+  status:       "pending" | "processing" | "completed" | "cancelled";
+  companyId:    string;
+  createdBy:    string;
+  createdAt:    FirebaseTimestamp | Date;
+  updatedAt:    FirebaseTimestamp | Date;
+}
+
+// ─── Legacy aliases ───────────────────────────────────────────────────────────
+
+export type BusinessProfile = Company & {
+  businessName:    string;
+  businessAddress: string;
+  about?:          string;
+  mission?:        string;
+  logo?:           string;
+  user_id?:        string;
+};
 
 export interface CurrentUser {
-  uid: string;
-  email: string | null;
+  uid:          string;
+  email:        string | null;
+  companyId?:   string;
+  displayName?: string;
+  role?:        UserRole;
+  isSuperAdmin?: boolean;
 }
 
 // ─── Redux state shapes ──────────────────────────────────────────────────────
 
-export interface ProductState {
-  productData: Product[];
-  isLoading: boolean;
-}
-
-export interface BusinessState {
-  buzProfileData: BusinessProfile[];
-  isLoading: boolean;
-}
+export interface ProductState    { productData: Product[];  isLoading: boolean; }
+export interface BusinessState   { buzProfileData: Company[]; isLoading: boolean; }
+export interface CompanyState    { company: Company | null; companyId: string | null; isLoading: boolean; }
 
 export interface CurrentUserState {
-  user: CurrentUser | null;
-  users: CurrentUser[];
-  status: string;
-  error: string | null | undefined;
+  user:    CurrentUser | null;
+  profile: UserProfile | null;
+  users:   CurrentUser[];
+  status:  string;
+  error:   string | null | undefined;
 }
 
-export interface UserState {
-  user: CurrentUser[];
-  status: string;
-  error: string | null | undefined;
-}
-
-export interface ModalState {
-  isOpen: boolean;
-}
+export interface ModalState { isOpen: boolean; }
 
 // ─── Component prop types ────────────────────────────────────────────────────
 
 export interface InputConfig {
-  id: number;
-  name: string;
-  type: string;
-  placeholder: string;
-  label: string;
-  errMessages?: string;
-  successMessage?: string;
-  pattern?: string;
-  required: boolean;
-  icon?: ReactNode;
-  value?: string | number;
-  onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
-}
-
-export interface StockInputField {
-  id: number;
-  name: string;
-  type: string;
-  placeholder: string;
-  label: string;
-  errMessages?: string;
-  required: boolean;
+  id:            number;
+  name:          string;
+  type:          string;
+  placeholder:   string;
+  label:         string;
+  errMessages?:  string;
+  pattern?:      string;
+  required:      boolean;
+  icon?:         ReactNode;
+  value?:        string | number;
+  onChange?:     (e: React.ChangeEvent<HTMLInputElement>) => void;
 }

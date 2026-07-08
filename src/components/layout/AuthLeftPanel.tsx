@@ -67,8 +67,8 @@ const AuthLeftPanel = ({ variant }: AuthLeftPanelProps) => (
 
     {/* Logo */}
     <div className="relative z-10 pb-52">{/* pb-52 keeps content above the bottom illustration */}
-      <Link to="/" className="flex items-center gap-2.5 mb-12">
-        <img src={Logo} alt="ProInventory" className="w-8 h-8 rounded-lg" />
+      <Link to="/" className="flex items-center mb-12">
+        <img src={Logo} alt="ProInventory" className="w-12 h-12 rounded-lg" />
         <span className="text-white font-bold text-lg">
           Pro<span style={{ color: "var(--color-brand-primary-soft)" }}>Inventory</span>
         </span>
