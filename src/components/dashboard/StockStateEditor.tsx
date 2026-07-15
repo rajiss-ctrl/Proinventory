@@ -3,16 +3,19 @@ import { doc, updateDoc } from "firebase/firestore";
 import { FaCheck, FaTimes, FaTrash } from "react-icons/fa";
 import db from "../../services/firebase";
 
-interface StockStateEditorProps {
+export interface StockStateEditorProps {
   id: string;
   qty: number;
   price: number;
   des?: string;
-  siz: string;
+  siz?: string;
   stockState: number;
   index: number;
+  companyId?: string;
+  canEditPrice?: boolean;
+  canDelete?: boolean;
   onClose: ((e: React.MouseEvent, index: number) => void) | (() => void);
-  onDelete: (e: React.MouseEvent, id: string) => void;
+  onDelete?: (e: React.MouseEvent, id: string) => void | Promise<void>;
 }
 
 interface FormData {
@@ -21,18 +24,45 @@ interface FormData {
 
 const StockStateEditor = ({
   id, qty, price, des, siz,
-  stockState, index, onClose, onDelete,
+  stockState, index, companyId,
+  canEditPrice = false,
+  canDelete = false,
+  onClose, onDelete,
 }: StockStateEditorProps) => {
   const [data, setData] = useState<FormData>({});
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
+  const closeModal = (e?: React.MouseEvent) => {
+    if (!onClose) return;
+    if (onClose.length === 0) {
+      (onClose as () => void)();
+      return;
+    }
+
+    (onClose as (e: React.MouseEvent, i: number) => void)(e ?? ({} as React.MouseEvent), index);
+  };
+
   const fields = [
-    { id: 1, name: "product_Qty", type: "number", label: "Product Quantity",
-      placeholder: `Stock: ${stockState === index ? qty : ""} ${siz}`, required: true },
-    { id: 2, name: "product_Price", type: "number", label: "Product Price",
-      placeholder: `Cost: ₦${stockState === index ? price : ""}`, required: true },
-    { id: 3, name: "product_description", type: "text", label: "Description",
-      placeholder: stockState === index ? (des ?? "") : "", required: false },
+    {
+      id: 1,
+      name: "product_Qty",
+      type: "number",
+      label: "Quantity to add",
+      placeholder: `Current stock: ${stockState === index ? qty : 0}`,
+      required: true,
+      min: 0,
+    },
+    ...(canEditPrice
+      ? [{
+          id: 2,
+          name: "product_Price",
+          type: "number",
+          label: "Product Price",
+          placeholder: `Current price: ₦${stockState === index ? price : 0}`,
+          required: true,
+          min: 0,
+        }]
+      : []),
   ];
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -40,17 +70,54 @@ const StockStateEditor = ({
 
   const handleUpdate = async (e: React.MouseEvent) => {
     e.preventDefault();
+    const payload: Record<string, number | string | Date> = {};
+    const currentQty = Number(qty ?? 0);
+
+    if (data.product_Qty !== undefined && data.product_Qty !== "") {
+      const incomingQty = Number(data.product_Qty);
+      const nextQty = Math.max(0, currentQty + incomingQty);
+      payload.stockQuantity = nextQty;
+      payload.product_Qty = nextQty;
+    }
+
+    if (canEditPrice && data.product_Price !== undefined && data.product_Price !== "") {
+      const priceValue = Number(data.product_Price);
+      payload.price = priceValue;
+      payload.product_Price = priceValue;
+    }
+
+    if (des !== undefined && data.product_description !== undefined && data.product_description !== "") {
+      payload.product_description = String(data.product_description);
+    }
+
+    if (siz && data.size !== undefined && data.size !== "") {
+      payload.size = String(data.size);
+    }
+
+    if (Object.keys(payload).length === 0) {
+      setData({});
+      return;
+    }
+
     try {
-      await updateDoc(doc(db, "stock", id), { ...data, dateStamp: new Date().toISOString() });
+      const targetDoc = companyId
+        ? doc(db, "companies", companyId, "products", id)
+        : doc(db, "stock", id);
+
+      await updateDoc(targetDoc, {
+        ...payload,
+        updatedAt: new Date(),
+      });
     } catch (err) {
       alert((err as Error).message);
     }
+
     setData({});
   };
 
   return (
     <div
-      className="w-[280px] rounded-xl p-5 text-sm relative z-50"
+      className="w-[320px] rounded-xl p-5 text-sm relative z-50"
       style={{
         background: "var(--color-surface-3)",
         border: "1px solid var(--color-border-brand)",
@@ -58,9 +125,27 @@ const StockStateEditor = ({
       }}
       onClick={(e) => e.stopPropagation()}
     >
-      <h3 className="text-sm font-semibold mb-4" style={{ color: "var(--color-text-primary)" }}>
-        Edit Product
-      </h3>
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <h3 className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+          Update Product
+        </h3>
+        <button
+          type="button"
+          aria-label="Close product update modal"
+          onClick={(e) => {
+            e.preventDefault();
+            closeModal(e);
+          }}
+          className="w-8 h-8 flex items-center justify-center rounded-lg"
+          style={{
+            background: "var(--color-surface-4)",
+            color: "var(--color-text-muted)",
+            border: "1px solid var(--color-border-soft)",
+          }}
+        >
+          <FaTimes size={12} />
+        </button>
+      </div>
       <form className="flex flex-col gap-3">
         {fields.map((f) => (
           <div key={f.id} className="flex flex-col gap-1">
@@ -68,6 +153,7 @@ const StockStateEditor = ({
             <input
               type={f.type}
               name={f.name}
+              min={f.min}
               value={(data[f.name] as string) ?? ""}
               onChange={handleChange}
               placeholder={f.placeholder}
@@ -82,68 +168,55 @@ const StockStateEditor = ({
           </div>
         ))}
 
-        <select
-          name="size"
-          value={(data.size as string) ?? ""}
-          onChange={handleChange}
-          required
-          className="rounded-lg p-2 text-sm outline-none"
-          style={{
-            background: "var(--color-input-bg)",
-            border: "1px solid var(--color-input-border)",
-            color: "var(--color-input-text)",
-          }}
-        >
-          <option value="" disabled>{siz || "Packaging size"}</option>
-          {["Pack", "Carton", "Piece", "Sachet", "Bag"].map((s) => (
-            <option key={s} value={s}>{s}</option>
-          ))}
-        </select>
-
         <button
-          onClick={(e) => {
-            handleUpdate(e);
-            if (onClose.length === 0) (onClose as () => void)();
-            else (onClose as (e: React.MouseEvent, i: number) => void)(e, index);
+          type="button"
+          onClick={async (e) => {
+            await handleUpdate(e);
+            closeModal(e);
           }}
           className="flex items-center justify-center gap-2 py-2 rounded-lg font-semibold text-sm"
           style={{ background: "var(--color-brand-primary)", color: "white" }}
         >
-          <FaCheck size={12} /> Update
+          <FaCheck size={12} /> Update Stock
         </button>
 
-        <button
-          onClick={(e) => { e.preventDefault(); setShowDeleteConfirm((p) => !p); }}
-          className="py-2 rounded-lg font-semibold text-sm"
-          style={{
-            background: "var(--color-surface-4)",
-            color: "var(--color-text-secondary)",
-            border: "1px solid var(--color-border-soft)",
-          }}
-        >
-          Delete Product
-        </button>
+        {canDelete && onDelete && (
+          <>
+            <button
+              type="button"
+              onClick={(e) => { e.preventDefault(); setShowDeleteConfirm((p) => !p); }}
+              className="py-2 rounded-lg font-semibold text-sm"
+              style={{
+                background: "var(--color-surface-4)",
+                color: "var(--color-text-secondary)",
+                border: "1px solid var(--color-border-soft)",
+              }}
+            >
+              Delete Product
+            </button>
 
-        {showDeleteConfirm && (
-          <div
-            className="absolute top-16 right-4 p-3 rounded-xl flex items-center gap-2 z-50"
-            style={{
-              background: "var(--color-surface-elevated)",
-              border: "1px solid var(--color-danger-border)",
-              boxShadow: "var(--shadow-card)",
-            }}
-          >
-            <button onClick={(e) => onDelete(e, id)}
-              className="w-8 h-8 flex items-center justify-center rounded-full"
-              style={{ background: "var(--color-danger)", color: "white" }}>
-              <FaTrash size={12} />
-            </button>
-            <button onClick={(e) => { e.preventDefault(); setShowDeleteConfirm(false); }}
-              className="w-8 h-8 flex items-center justify-center rounded-full"
-              style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-soft)" }}>
-              <FaTimes size={12} />
-            </button>
-          </div>
+            {showDeleteConfirm && (
+              <div
+                className="absolute top-16 right-4 p-3 rounded-xl flex items-center gap-2 z-50"
+                style={{
+                  background: "var(--color-surface-elevated)",
+                  border: "1px solid var(--color-danger-border)",
+                  boxShadow: "var(--shadow-card)",
+                }}
+              >
+                <button type="button" onClick={(e) => onDelete(e, id)}
+                  className="w-8 h-8 flex items-center justify-center rounded-full"
+                  style={{ background: "var(--color-danger)", color: "white" }}>
+                  <FaTrash size={12} />
+                </button>
+                <button type="button" onClick={(e) => { e.preventDefault(); setShowDeleteConfirm(false); }}
+                  className="w-8 h-8 flex items-center justify-center rounded-full"
+                  style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-soft)" }}>
+                  <FaTimes size={12} />
+                </button>
+              </div>
+            )}
+          </>
         )}
       </form>
     </div>

@@ -66,7 +66,7 @@
 
 ### 📦 Product Management
 - Full **Add Product** page (not a modal — inline dashboard view)
-- Drag-and-drop image upload with compression and Firebase Storage
+- Drag-and-drop image upload with compression and Cloudinary unsigned uploads
 - Category, currency, pricing, packaging size, description
 - Edit product inline with stock state editor
 - Delete confirmation flow
@@ -195,6 +195,9 @@ VITE_FIREBASE_PROJECT_ID=your_project_id
 VITE_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
 VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
 VITE_FIREBASE_APP_ID=your_app_id
+
+VITE_CLOUDINARY_CLOUD_NAME=your_cloud_name
+VITE_CLOUDINARY_UPLOAD_PRESET=your_unsigned_upload_preset
 ```
 
 > ⚠️ Never commit your `.env` file. It is already listed in `.gitignore`.
@@ -226,7 +229,7 @@ npm run preview
 1. Go to the [Firebase Console](https://console.firebase.google.com) and create a new project
 2. Enable **Email/Password** and **Google** providers under **Authentication → Sign-in method**
 3. Create a **Firestore Database** in production mode
-4. Enable **Firebase Storage**
+4. Enable **Firebase Storage** only if you still use Firebase for other assets; the app’s product and logo uploads now use Cloudinary
 5. Add the following Firestore security rules:
 
 ```javascript
@@ -249,6 +252,25 @@ service cloud.firestore {
   }
 }
 ```
+
+## ☁️ Cloudinary Setup for Product and Logo Uploads
+
+Use Cloudinary for all product images and subscriber/business logo uploads so the browser does not depend on Firebase Storage CORS behavior during local development.
+
+1. Create a Cloudinary account and open the **Dashboard**.
+2. Copy your Cloudinary **cloud name** from the dashboard.
+3. Go to **Settings → Upload → Upload presets** and create an **unsigned** preset.
+4. In the project root, create a `.env` file with:
+
+```env
+VITE_CLOUDINARY_CLOUD_NAME=your_cloud_name
+VITE_CLOUDINARY_UPLOAD_PRESET=your_unsigned_upload_preset
+```
+
+5. Keep the same folder naming convention used by the app:
+   - `products` for item images
+   - `businesses` for subscriber/company logos
+6. The upload flow already calls the shared helper in [src/services/cloudinary.service.ts](src/services/cloudinary.service.ts), so the product form and business profile form will send the file to Cloudinary, receive a secure URL, and store that URL in Firestore.
 
 ---
 

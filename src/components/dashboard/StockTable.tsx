@@ -88,7 +88,7 @@ const StockTable = ({ onNewItem, showNewItemForm }: StockTableProps) => {
 
   return (
     <>
-      <div className={`relative flex flex-col min-w-0 break-words bg-white w-full mb-2 rounded ${isInventoryView ? "xl:mt-8" : "mt-0 md:min-h-screen"}`}>
+      <div className={`relative flex flex-col min-w-0 wrap-break-word bg-white w-full mb-2 rounded ${isInventoryView ? "xl:mt-8" : "mt-0 md:min-h-screen"}`}>
         {showNewItemForm && onNewItem && <AddStockModal onClose={onNewItem} />}
 
         {/* Brand logo row */}
@@ -138,9 +138,8 @@ const StockTable = ({ onNewItem, showNewItemForm }: StockTableProps) => {
                         {/* Image */}
                         <td className="px-4 py-2 text-xs">
                           <div className={`${editIdx === idx ? "block" : "hidden"} absolute mt-14 lg:mt-0 flex justify-center items-center top-0 w-full left-0 bg-transparent`}>
-                            <StockStateEditor id={item.id} qty={item.product_Qty} price={item.product_Price}
-                              des={item.product_description} siz={item.size} stockState={editIdx}
-                              index={idx} onClose={toggleEdit} onDelete={handleDelete} />
+                            <StockStateEditor id={item.id} qty={item.product_Qty ?? 0} price={item.product_Price ?? 0}
+                              stockState={editIdx} index={idx} onClose={toggleEdit} onDelete={handleDelete} />
                           </div>
                           {item.img
                             ? <img src={item.img} alt={item.product_name} className="w-8 h-8 rounded-md" />

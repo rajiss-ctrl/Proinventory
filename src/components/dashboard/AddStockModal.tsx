@@ -1,10 +1,14 @@
-import { useState, useEffect } from "react";
-import { addDoc, collection } from "firebase/firestore";
-import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
+import { useEffect, useState } from "react";
+import { useSelector } from "react-redux";
 import imageCompression from "browser-image-compression";
-import db, { storage, useAuth } from "../../services/firebase";
+import { useAuth } from "../../services/firebase";
 import { FaCloudUploadAlt, FaMoneyBill, FaProductHunt, FaSortNumericUp } from "react-icons/fa";
 import StockInputField from "../forms/StockInputField";
+import { RootState } from "../../app/store";
+import { ProductService } from "../../services/product.service";
+import { WarehouseService } from "../../services/warehouse.service";
+import { uploadImageToCloudinary } from "../../services/cloudinary.service";
+import { Warehouse } from "../../types";
 
 interface StockData {
   product_name: string;
@@ -30,26 +34,67 @@ interface AddStockModalProps {
 
 const AddStockModal = ({ onClose }: AddStockModalProps) => {
   const currentUser = useAuth();
+  const companyId = useSelector((s: RootState) => s.auth.user?.companyId ?? "");
   const [data, setData] = useState<StockData>(EMPTY);
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [warehouseId, setWarehouseId] = useState("");
+  const [warehousesLoading, setWarehousesLoading] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!file) return;
-    const task = uploadBytesResumable(ref(storage, `${Date.now()}_${file.name}`), file);
-    task.on("state_changed",
-      (s) => setProgress((s.bytesTransferred / s.totalBytes) * 100),
-      (err) => { setError(err.message); setProgress(null); },
-      () => getDownloadURL(task.snapshot.ref).then((url) => { setData((p) => ({ ...p, img: url })); setProgress(null); })
-    );
-  }, [file]);
+    if (!companyId) return;
+
+    let cancelled = false;
+    const loadWarehouses = async () => {
+      setWarehousesLoading(true);
+      try {
+        const list = await WarehouseService.list(companyId);
+        if (cancelled) return;
+        const sorted = list.sort((a, b) => a.name.localeCompare(b.name));
+        setWarehouses(sorted);
+        setWarehouseId((current) => current || sorted[0]?.id || "");
+      } catch (err) {
+        if (!cancelled) {
+          setError((err as Error).message || "Failed to load warehouses.");
+        }
+      } finally {
+        if (!cancelled) {
+          setWarehousesLoading(false);
+        }
+      }
+    };
+
+    void loadWarehouses();
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
-    if (!/\.(jpg|jpeg|png)$/i.test(f.name)) { alert("Only jpg/jpeg/png allowed."); return; }
-    setFile(f.size > 1_048_576 ? await imageCompression(f, { maxSizeMB: 1, maxWidthOrHeight: 1024 }) : f);
+    if (!["image/jpeg", "image/png", "image/webp"].includes(f.type)) {
+      setError("Only JPG, PNG or WEBP images allowed."); return;
+    }
+
+    setError("");
+    const compressed = f.size > 1_048_576
+      ? await imageCompression(f, { maxSizeMB: 1, maxWidthOrHeight: 1024 })
+      : f;
+
+    setFile(compressed);
+    setProgress(0);
+
+    try {
+      const url = await uploadImageToCloudinary(compressed, "products");
+      setData((p) => ({ ...p, img: url }));
+      setProgress(100);
+    } catch (err) {
+      setError((err as Error).message);
+      setProgress(null);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -57,9 +102,39 @@ const AddStockModal = ({ onClose }: AddStockModalProps) => {
     if (!data.product_name || !data.product_Qty || !data.product_Price || !data.size) {
       setError("Please fill all required fields."); return;
     }
+    if (!companyId) {
+      setError("Company context is not available yet."); return;
+    }
+    if (!warehouseId) {
+      setError("Please select a warehouse for this item."); return;
+    }
+    if (file && !data.img) {
+      setError("Please wait for the image upload to finish."); return;
+    }
+
+    const selectedWarehouse = warehouses.find((item) => item.id === warehouseId);
+    if (!selectedWarehouse) {
+      setError("Selected warehouse is no longer available. Please choose another warehouse.");
+      return;
+    }
+
     try {
-      await addDoc(collection(db, "stock"), { user_id: currentUser?.uid, timestamp: new Date(), ...data });
+      await ProductService.create({
+        companyId,
+        createdBy: currentUser?.uid ?? "",
+        name: data.product_name,
+        sku: `SKU-${Date.now().toString(36).toUpperCase()}`,
+        categoryId: "legacy",
+        categoryName: data.product_description || "Other",
+        price: Number(data.product_Price),
+        stockQuantity: Number(data.product_Qty),
+        imageUrl: data.img ?? "",
+        size: data.size,
+        warehouseId: selectedWarehouse.id,
+        warehouseName: selectedWarehouse.name,
+      });
       setData(EMPTY); setFile(null); setProgress(null); setError("");
+      setWarehouseId(warehouses[0]?.id ?? "");
     } catch (err) { setError((err as Error).message); }
   };
 
@@ -124,7 +199,24 @@ const AddStockModal = ({ onClose }: AddStockModalProps) => {
             <option value="" disabled>Choose packaging size</option>
             {["Pack", "Carton", "Piece", "Sachet", "Bag"].map((s) => <option key={s}>{s}</option>)}
           </select>
-
+          <select
+            value={warehouseId}
+            onChange={(e) => setWarehouseId(e.target.value)}
+            disabled={warehousesLoading || warehouses.length === 0}
+            className="w-full text-sm rounded-lg p-2.5 outline-none mb-2"
+            style={{
+              background: "var(--color-input-bg)",
+              border: "1px solid var(--color-input-border)",
+              color: "var(--color-input-text)",
+            }}
+          >
+            <option value="" disabled>
+              {warehousesLoading ? "Loading warehouses..." : warehouses.length === 0 ? "Create a warehouse first" : "Select warehouse"}
+            </option>
+            {warehouses.map((warehouse) => (
+              <option key={warehouse.id} value={warehouse.id}>{warehouse.code} — {warehouse.name}</option>
+            ))}
+          </select>
           <label htmlFor="productImg"
             className="flex items-center text-sm font-medium pb-2 cursor-pointer gap-2"
             style={{ color: "var(--color-brand-primary-soft)" }}>

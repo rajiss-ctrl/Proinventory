@@ -201,44 +201,51 @@ export const PLANS: PlanDefinition[] = [
 
 /** users/{uid} — Global user profile */
 export interface UserProfile {
-  uid:          string;
-  email:        string;
-  displayName:  string;
-  companyId:    string;
-  role:         UserRole;
-  status:       UserStatus;
-  isSuperAdmin: boolean;
-  permissions:  UserPermissions;
-  createdAt:    FirebaseTimestamp | Date;
-  updatedAt:    FirebaseTimestamp | Date;
+  uid:                string;
+  email:              string;
+  displayName:        string;
+  companyId:          string;
+  role:               UserRole;
+  status:             UserStatus;
+  isSuperAdmin:       boolean;
+  permissions:        UserPermissions;
+  assignedWarehouseId?: string;
+  createdAt:          FirebaseTimestamp | Date;
+  updatedAt:          FirebaseTimestamp | Date;
 }
 
 /** companies/{companyId} */
 export interface Company {
-  id:        string;
-  name:      string;
-  slug:      string;
-  email:     string;
-  phone?:    string;
-  industry?: string;
-  plan:      SubscriptionPlan;
-  status:    "active" | "inactive";
-  ownerId:   string;
-  createdAt: FirebaseTimestamp | Date;
-  updatedAt: FirebaseTimestamp | Date;
+  id:                 string;
+  name:               string;
+  slug:               string;
+  email:              string;
+  phone?:             string;
+  industry?:          string;
+  plan:               SubscriptionPlan;
+  /** overall company lifecycle state */
+  status:             "trial" | "active" | "suspended" | "inactive";
+  /** ISO string — set to now + 14 days on registration */
+  trialEndsAt:        string;
+  /** whether a paid subscription is active */
+  subscriptionStatus: "trialing" | "active" | "cancelled" | "past_due";
+  ownerId:            string;
+  createdAt:          FirebaseTimestamp | Date;
+  updatedAt:          FirebaseTimestamp | Date;
 }
 
 /** companies/{companyId}/users/{uid} */
 export interface CompanyUser {
-  uid:         string;
-  email:       string;
-  displayName: string;
-  companyId:   string;
-  role:        UserRole;
-  status:      UserStatus;
-  permissions: UserPermissions;
-  createdAt:   FirebaseTimestamp | Date;
-  updatedAt:   FirebaseTimestamp | Date;
+  uid:                string;
+  email:              string;
+  displayName:        string;
+  companyId:          string;
+  role:               UserRole;
+  status:             UserStatus;
+  permissions:        UserPermissions;
+  assignedWarehouseId?: string;
+  createdAt:          FirebaseTimestamp | Date;
+  updatedAt:          FirebaseTimestamp | Date;
 }
 
 /** companies/{companyId}/categories/{categoryId} */
@@ -265,15 +272,17 @@ export interface Product {
   imageUrl?:     string;
   companyId:     string;
   createdBy:     string;
-  createdAt:     FirebaseTimestamp | Date;
-  updatedAt:     FirebaseTimestamp | Date;
-  // Legacy compat
+  createdAt:     FirebaseTimestamp | Date | string;
+  updatedAt:     FirebaseTimestamp | Date | string;
+  // Legacy compat / analytics fields
   product_name?:        string;
   product_Qty?:         number;
   product_Price?:       number;
   product_description?: string;
   size?:                string;
   img?:                 string;
+  initialStock?:        number;
+  timestamp?:           FirebaseTimestamp | Date | string | null;
 }
 
 export interface OrderItem { productId: string; name: string; qty: number; price: number; }
@@ -290,6 +299,145 @@ export interface Order {
   updatedAt:    FirebaseTimestamp | Date;
 }
 
+// ─── New domain models ───────────────────────────────────────────────────────
+
+/** companies/{companyId}/warehouses/{warehouseId} */
+export interface Warehouse {
+  id:          string;
+  name:        string;
+  code:        string;        // e.g. "WH-001"
+  address?:    string;
+  city?:       string;
+  country?:    string;
+  isDefault:   boolean;
+  companyId:   string;
+  createdBy:   string;
+  createdAt:   FirebaseTimestamp | Date;
+  updatedAt:   FirebaseTimestamp | Date;
+}
+
+/** companies/{companyId}/inventory/{inventoryId} */
+export interface InventoryRecord {
+  id:            string;
+  productId:     string;
+  productName:   string;
+  warehouseId:   string;
+  warehouseName: string;
+  quantity:      number;
+  reservedQty:   number;       // qty reserved by pending orders
+  availableQty:  number;       // quantity - reservedQty
+  reorderLevel:  number;       // trigger low-stock alert below this
+  companyId:     string;
+  updatedAt:     FirebaseTimestamp | Date;
+}
+
+/** companies/{companyId}/transfers/{transferId} */
+export interface Transfer {
+  id:              string;
+  transferNumber:  string;     // e.g. "TRF-001"
+  fromWarehouseId: string;
+  fromWarehouseName: string;
+  toWarehouseId:   string;
+  toWarehouseName: string;
+  status:          "draft" | "pending" | "in_transit" | "completed" | "cancelled";
+  items:           TransferItem[];
+  notes?:          string;
+  companyId:       string;
+  createdBy:       string;
+  createdAt:       FirebaseTimestamp | Date;
+  updatedAt:       FirebaseTimestamp | Date;
+}
+
+/** companies/{companyId}/transfers/{transferId}/items/{itemId} */
+export interface TransferItem {
+  id:          string;
+  productId:   string;
+  productName: string;
+  sku:         string;
+  quantity:    number;
+}
+
+/** companies/{companyId}/stockMovements/{movementId} */
+export type StockMovementType =
+  | "stock_in"
+  | "stock_out"
+  | "adjustment"
+  | "transfer_in"
+  | "transfer_out"
+  | "sale"
+  | "return"
+  | "damage";
+
+export interface StockMovement {
+  id:           string;
+  productId:    string;
+  productName:  string;
+  sku:          string;
+  warehouseId:  string;
+  type:         StockMovementType;
+  quantity:     number;         // positive = in, negative = out
+  balanceBefore: number;
+  balanceAfter:  number;
+  reference?:   string;         // orderId / transferId / etc.
+  notes?:       string;
+  companyId:    string;
+  createdBy:    string;
+  createdAt:    FirebaseTimestamp | Date;
+}
+
+/** companies/{companyId}/suppliers/{supplierId} */
+export interface Supplier {
+  id:           string;
+  name:         string;
+  email?:       string;
+  phone?:       string;
+  address?:     string;
+  contactPerson?: string;
+  status:       "active" | "inactive";
+  companyId:    string;
+  createdBy:    string;
+  createdAt:    FirebaseTimestamp | Date;
+  updatedAt:    FirebaseTimestamp | Date;
+}
+
+/** companies/{companyId}/customers/{customerId} */
+export interface Customer {
+  id:           string;
+  name:         string;
+  email?:       string;
+  phone?:       string;
+  address?:     string;
+  totalOrders:  number;
+  totalSpent:   number;
+  status:       "active" | "inactive";
+  companyId:    string;
+  createdBy:    string;
+  createdAt:    FirebaseTimestamp | Date;
+  updatedAt:    FirebaseTimestamp | Date;
+}
+
+/** companies/{companyId}/settings/general */
+export interface GeneralSettings {
+  companyName:    string;
+  currency:       string;       // e.g. "USD", "NGN"
+  timezone:       string;
+  lowStockAlert:  number;       // default reorder level threshold
+  logoUrl?:       string;
+  address?:       string;
+  updatedAt:      FirebaseTimestamp | Date;
+}
+
+/** companies/{companyId}/settings/roles */
+export interface RolesSettings {
+  roles: {
+    [roleName: string]: {
+      displayName: string;
+      permissions: UserPermissions;
+    };
+  };
+  updatedAt: FirebaseTimestamp | Date;
+}
+
 // ─── Legacy aliases ───────────────────────────────────────────────────────────
 
 export type BusinessProfile = Company & {
@@ -302,18 +450,19 @@ export type BusinessProfile = Company & {
 };
 
 export interface CurrentUser {
-  uid:          string;
-  email:        string | null;
-  companyId?:   string;
-  displayName?: string;
-  role?:        UserRole;
-  isSuperAdmin?: boolean;
+  uid:                string;
+  email:              string | null;
+  companyId?:         string;
+  displayName?:       string;
+  role?:              UserRole;
+  isSuperAdmin?:      boolean;
+  assignedWarehouseId?: string;
 }
 
 // ─── Redux state shapes ──────────────────────────────────────────────────────
 
 export interface ProductState    { productData: Product[];  isLoading: boolean; }
-export interface BusinessState   { buzProfileData: Company[]; isLoading: boolean; }
+export interface BusinessState   { buzProfileData: BusinessProfile[]; isLoading: boolean; }
 export interface CompanyState    { company: Company | null; companyId: string | null; isLoading: boolean; }
 
 export interface CurrentUserState {

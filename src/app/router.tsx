@@ -37,8 +37,8 @@ const AppRouter = () => (
             <Route path="superadmin" element={<SuperAdminPage />} />
           </Route>
 
-          {/* Business Owner + Guest (= full owner access) */}
-          <Route element={<RoleRoute allow={["company_owner", "guest"]} redirectTo="/dashboard" />}>
+          {/* Business Owner + Company Admin + Guest (= company management access) */}
+          <Route element={<RoleRoute allow={["company_owner", "company_admin", "guest"]} redirectTo="/dashboard" />}>
             <Route path="owner"            element={<OwnerDashboardPage />} />
             <Route path="business-profile" element={<BusinessProfilePage />} />
           </Route>

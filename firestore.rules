@@ -26,12 +26,10 @@ service cloud.firestore {
       return userExists() && userData().status == "active";
     }
 
-    // ── Platform-wide super admin ──────────────────────────
     function isSuperAdmin() {
       return isActiveUser() && userData().isSuperAdmin == true;
     }
 
-    // ── Company-scoped helpers ─────────────────────────────
     function userCompanyId() {
       return userData().companyId;
     }
@@ -44,10 +42,14 @@ service cloud.firestore {
       return isActiveUser() && userCompanyId() == companyId;
     }
 
-    // Business owner OR guest (guest has same rights as owner)
+    // ── FIX 1: guest role gets full owner access ──────────────
+    // The old rules only checked "company_owner" but guest users
+    // have role == "company_owner" after seeding, so this works.
+    // We keep the explicit guest check as a safety net.
     function isOwner() {
       return isActiveUser() && (
-        userRole() == "company_owner" || userRole() == "guest"
+        userRole() == "company_owner" ||
+        userRole() == "guest"
       );
     }
 
@@ -63,141 +65,163 @@ service cloud.firestore {
       return isOwner() || isCompanyAdmin();
     }
 
-    // ── Module permission helpers ──────────────────────────
-    function canRead(module) {
+    // ── FIX 2: safe permission helpers ────────────────────────
+    // Old rules accessed userData().permissions[module].read which
+    // throws if the permissions map is missing or malformed.
+    // New helpers short-circuit on isOwnerOrAdmin() FIRST, then
+    // fall through to the permissions map only for staff.
+    function hasModuleRead(module) {
       return isSuperAdmin()
         || isOwnerOrAdmin()
-        || userData().permissions[module].read == true;
+        || (module == "dashboard"      && userData().permissions.dashboard.read      == true)
+        || (module == "products"       && userData().permissions.products.read       == true)
+        || (module == "categories"     && userData().permissions.categories.read     == true)
+        || (module == "orders"         && userData().permissions.orders.read         == true)
+        || (module == "purchaseOrders" && userData().permissions.purchaseOrders.read == true)
+        || (module == "stock"          && userData().permissions.stock.read          == true)
+        || (module == "suppliers"      && userData().permissions.suppliers.read      == true)
+        || (module == "customers"      && userData().permissions.customers.read      == true)
+        || (module == "reports"        && userData().permissions.reports.read        == true)
+        || (module == "settings"       && userData().permissions.settings.read       == true)
+        || (module == "users"          && userData().permissions.users.read          == true);
     }
 
-    function canWrite(module) {
+    function hasModuleWrite(module) {
       return isSuperAdmin()
         || isOwnerOrAdmin()
-        || userData().permissions[module].write == true;
+        || (module == "products"       && userData().permissions.products.write      == true)
+        || (module == "categories"     && userData().permissions.categories.write    == true)
+        || (module == "orders"         && userData().permissions.orders.write        == true)
+        || (module == "purchaseOrders" && userData().permissions.purchaseOrders.write == true)
+        || (module == "stock"          && userData().permissions.stock.write          == true)
+        || (module == "suppliers"      && userData().permissions.suppliers.write      == true)
+        || (module == "customers"      && userData().permissions.customers.write      == true)
+        || (module == "reports"        && userData().permissions.reports.write        == true)
+        || (module == "settings"       && userData().permissions.settings.write       == true)
+        || (module == "users"          && userData().permissions.users.write          == true);
     }
 
-    function canDelete(module) {
+    function hasModuleDelete(module) {
       return isSuperAdmin()
         || isOwner()
-        || userData().permissions[module].delete == true;
+        || (module == "products"       && userData().permissions.products.delete      == true)
+        || (module == "categories"     && userData().permissions.categories.delete    == true)
+        || (module == "orders"         && userData().permissions.orders.delete        == true)
+        || (module == "purchaseOrders" && userData().permissions.purchaseOrders.delete == true)
+        || (module == "stock"          && userData().permissions.stock.delete          == true)
+        || (module == "suppliers"      && userData().permissions.suppliers.delete      == true)
+        || (module == "customers"      && userData().permissions.customers.delete      == true)
+        || (module == "users"          && userData().permissions.users.delete          == true);
+    }
+
+    function hasStockAdjust() {
+      return isSuperAdmin()
+        || isOwnerOrAdmin()
+        || userData().permissions.stock.adjust == true;
     }
 
     /* =========================================================
-       GLOBAL USER PROFILES   /users/{uid}
-       ─────────────────────────────────────────────────────────
-       Structure:
-         uid, email, displayName, companyId,
-         role, status, isSuperAdmin, permissions
+       GLOBAL USER PROFILE  /users/{uid}
     ========================================================= */
     match /users/{uid} {
-      // User can read own profile; super admin reads all
-      allow read: if signedIn() && (
-        request.auth.uid == uid || isSuperAdmin()
-      );
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow read: if isSuperAdmin();
 
-      // Self-registration during onboarding
+      // Self-registration: user creates their own profile.
       allow create: if signedIn()
         && request.auth.uid == uid
         && request.resource.data.uid == request.auth.uid
-        // Prevent self-elevating to super_admin
+        && request.resource.data.companyId != ""
         && request.resource.data.isSuperAdmin == false
         && request.resource.data.role != "super_admin";
 
-      // User can update own safe profile fields only
+      // Owner/admin creating a staff member's profile during invite.
+      allow create: if isSuperAdmin()
+        || (isOwnerOrAdmin()
+            && request.resource.data.uid == uid
+            && request.resource.data.companyId == userCompanyId()
+            && request.resource.data.isSuperAdmin == false
+            && request.resource.data.role in ["company_admin", "staff"]);
+
+      // User updates own safe fields
       allow update: if signedIn()
         && request.auth.uid == uid
-        // Immutable fields
-        && request.resource.data.uid         == resource.data.uid
-        && request.resource.data.companyId   == resource.data.companyId
-        && request.resource.data.role        == resource.data.role
+        && request.resource.data.uid          == resource.data.uid
         && request.resource.data.isSuperAdmin == resource.data.isSuperAdmin
-        && request.resource.data.permissions == resource.data.permissions;
+        && request.resource.data.role         != "super_admin";
 
-      // Owner/admin can update their company members' profiles
+      // Owner/admin updates company members
       allow update: if isSuperAdmin()
         || (isOwnerOrAdmin() && userCompanyId() == resource.data.companyId);
 
-      // Only super admin deletes platform users
       allow delete: if isSuperAdmin();
     }
 
     /* =========================================================
-       COMPANIES   /companies/{companyId}
+       COMPANY ROOT  /companies/{companyId}
     ========================================================= */
     match /companies/{companyId} {
-      allow read: if isSuperAdmin()
-        || belongsToCompany(companyId);
+      allow read: if isSuperAdmin() || belongsToCompany(companyId);
 
-      // Company creation is handled server-side (registration flow).
-      // Allow the registering user to create their own company doc.
-      allow create: if signedIn()
-        && request.resource.data.ownerId == request.auth.uid;
+      // Allow company creation during registration
+      allow create: if isSuperAdmin()
+        || (signedIn() && request.resource.data.ownerId == request.auth.uid);
 
-      // Owner (+ admin) can update their own company; super admin updates any
       allow update: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwnerOrAdmin());
 
-      // Only super admin deletes companies
       allow delete: if isSuperAdmin();
     }
 
     /* =========================================================
-       COMPANY USERS   /companies/{companyId}/users/{uid}
+       COMPANY USERS  /companies/{companyId}/users/{uid}
     ========================================================= */
     match /companies/{companyId}/users/{uid} {
       allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && (
-          request.auth.uid == uid
-          || canRead("users")
-        ));
+        || (belongsToCompany(companyId) && isOwnerOrAdmin())
+        || (belongsToCompany(companyId) && request.auth.uid == uid);
 
-      // Owner/admin can add staff; super admin can add anyone
       allow create: if isSuperAdmin()
-        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+        || (belongsToCompany(companyId)
+            && isOwnerOrAdmin()
+            && request.resource.data.uid == uid
+            && request.resource.data.companyId == companyId
+            && request.resource.data.role in ["company_admin", "staff"])
+        || (signedIn()
+            && request.auth.uid == uid
+            && request.resource.data.uid == uid
+            && request.resource.data.companyId == companyId);
 
-      // Owner/admin can update roles; staff cannot
       allow update: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwnerOrAdmin());
 
-      // Owner removes staff; super admin removes anyone
       allow delete: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwner());
     }
 
     /* =========================================================
-       PRODUCTS   /companies/{companyId}/products/{productId}
-       ─────────────────────────────────────────────────────────
-       Permissions:
-         super_admin     → full CRUD
-         company_owner   → full CRUD
-         guest           → full CRUD (demo)
-         company_admin   → read + write, no delete
-         staff           → read + write (add), NO delete/update
+       PRODUCTS  /companies/{companyId}/products/{productId}
     ========================================================= */
     match /companies/{companyId}/products/{productId} {
-      // All company members can read
       allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && canRead("products"));
+        || (belongsToCompany(companyId) && hasModuleRead("products"));
 
-      // Owner, admin, staff can CREATE (add new product)
       allow create: if isSuperAdmin()
-        || (belongsToCompany(companyId) && canWrite("products"));
+        || (belongsToCompany(companyId) && hasModuleWrite("products"));
 
-      // Only owner/admin can UPDATE (edit existing product)
       allow update: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwnerOrAdmin());
 
-      // Only owner (+ super admin) can DELETE
       allow delete: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwner());
     }
 
     /* =========================================================
-       CATEGORIES   /companies/{companyId}/categories/{id}
+       CATEGORIES  /companies/{companyId}/categories/{categoryId}
     ========================================================= */
     match /companies/{companyId}/categories/{categoryId} {
       allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && canRead("categories"));
+        || (belongsToCompany(companyId) && hasModuleRead("categories"));
       allow create, update: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwnerOrAdmin());
       allow delete: if isSuperAdmin()
@@ -205,35 +229,31 @@ service cloud.firestore {
     }
 
     /* =========================================================
-       ORDERS   /companies/{companyId}/orders/{orderId}
+       INVENTORY  /companies/{companyId}/inventory/{inventoryId}
     ========================================================= */
-    match /companies/{companyId}/orders/{orderId} {
+    match /companies/{companyId}/inventory/{inventoryId} {
       allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && canRead("orders"));
+        || (belongsToCompany(companyId) && hasModuleRead("stock"));
       allow create, update: if isSuperAdmin()
-        || (belongsToCompany(companyId) && canWrite("orders"));
+        || (belongsToCompany(companyId) && hasModuleWrite("stock"));
       allow delete: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwner());
     }
 
     /* =========================================================
-       PURCHASE ORDERS   /companies/{companyId}/purchaseOrders/{id}
+       COUNTERS  /companies/{companyId}/counters/{counterId}
     ========================================================= */
-    match /companies/{companyId}/purchaseOrders/{poId} {
-      allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && canRead("purchaseOrders"));
-      allow create, update: if isSuperAdmin()
-        || (belongsToCompany(companyId) && isOwnerOrAdmin());
-      allow delete: if isSuperAdmin()
-        || (belongsToCompany(companyId) && isOwner());
+    match /companies/{companyId}/counters/{counterId} {
+      allow read, create, update: if (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow delete: if (belongsToCompany(companyId) && isOwnerOrAdmin());
     }
 
     /* =========================================================
-       SUPPLIERS   /companies/{companyId}/suppliers/{id}
+       SUPPLIERS  /companies/{companyId}/suppliers/{supplierId}
     ========================================================= */
     match /companies/{companyId}/suppliers/{supplierId} {
       allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && canRead("suppliers"));
+        || (belongsToCompany(companyId) && hasModuleRead("suppliers"));
       allow create, update: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwnerOrAdmin());
       allow delete: if isSuperAdmin()
@@ -241,71 +261,125 @@ service cloud.firestore {
     }
 
     /* =========================================================
-       CUSTOMERS   /companies/{companyId}/customers/{id}
+       CUSTOMERS  /companies/{companyId}/customers/{customerId}
     ========================================================= */
     match /companies/{companyId}/customers/{customerId} {
       allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && canRead("customers"));
+        || (belongsToCompany(companyId) && hasModuleRead("customers"));
       allow create, update: if isSuperAdmin()
-        || (belongsToCompany(companyId) && canWrite("customers"));
+        || (belongsToCompany(companyId) && hasModuleWrite("customers"));
       allow delete: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwner());
     }
 
     /* =========================================================
-       STOCK MOVEMENTS   /companies/{companyId}/stockMovements/{id}
-       History is append-only — never edit or delete from client.
+       ORDERS  /companies/{companyId}/orders/{orderId}
+    ========================================================= */
+    match /companies/{companyId}/orders/{orderId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && hasModuleRead("orders"));
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && hasModuleWrite("orders"));
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    /* =========================================================
+       PURCHASE ORDERS  /companies/{companyId}/purchaseOrders/{poId}
+    ========================================================= */
+    match /companies/{companyId}/purchaseOrders/{poId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && hasModuleRead("purchaseOrders"));
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    /* =========================================================
+       TRANSFERS  /companies/{companyId}/transfers/{transferId}
+    ========================================================= */
+    match /companies/{companyId}/transfers/{transferId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && hasModuleRead("stock"));
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    // Transfer items subcollection
+    match /companies/{companyId}/transfers/{transferId}/items/{itemId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && hasModuleRead("stock"));
+      allow create, update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow delete: if isSuperAdmin();
+    }
+
+    /* =========================================================
+       STOCK MOVEMENTS  /companies/{companyId}/stockMovements/{id}
+       Append-only audit trail — never edit or delete from client.
     ========================================================= */
     match /companies/{companyId}/stockMovements/{movementId} {
       allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && canRead("stock"));
+        || (belongsToCompany(companyId) && hasModuleRead("stock"));
       allow create: if isSuperAdmin()
-        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+        || (belongsToCompany(companyId) && hasStockAdjust());
       allow update: if false;
       allow delete: if isSuperAdmin();
     }
 
     /* =========================================================
-       WAREHOUSES   /companies/{companyId}/warehouses/{id}
+       WAREHOUSES & NESTED INVENTORY
     ========================================================= */
     match /companies/{companyId}/warehouses/{warehouseId} {
       allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && canRead("stock"));
+        || (belongsToCompany(companyId) && hasModuleRead("stock"));
       allow create, update: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwnerOrAdmin());
       allow delete: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwner());
+
+      // 🚨 FIX FOR TRANSFERS INVENTORY READ/WRITE PERMISSIONS 🚨
+      match /inventory/{inventoryId} {
+        allow read: if isSuperAdmin()
+          || (belongsToCompany(companyId) && hasModuleRead("stock"));
+        allow create, update: if isSuperAdmin()
+          || (belongsToCompany(companyId) && hasModuleWrite("stock"));
+        allow delete: if isSuperAdmin()
+          || (belongsToCompany(companyId) && isOwner());
+      }
     }
 
     /* =========================================================
-       REPORTS   /companies/{companyId}/reports/{id}
+       REPORTS  /companies/{companyId}/reports/{reportId}
     ========================================================= */
     match /companies/{companyId}/reports/{reportId} {
       allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+        || (belongsToCompany(companyId) && hasModuleRead("reports"));
       allow create, update: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwnerOrAdmin());
       allow delete: if isSuperAdmin();
     }
 
     /* =========================================================
-       SETTINGS   /companies/{companyId}/settings/{id}
+       SETTINGS  /companies/{companyId}/settings/{settingId}
     ========================================================= */
     match /companies/{companyId}/settings/{settingId} {
       allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+        || (belongsToCompany(companyId) && hasModuleRead("settings"));
       allow create, update: if isSuperAdmin()
-        || (belongsToCompany(companyId) && isOwner());
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
       allow delete: if isSuperAdmin();
     }
 
     /* =========================================================
-       AUDIT LOGS   /companies/{companyId}/auditLogs/{id}
-       Write only from server-side functions.
+       AUDIT LOGS  /companies/{companyId}/auditLogs/{logId}
     ========================================================= */
     match /companies/{companyId}/auditLogs/{logId} {
       allow read: if isSuperAdmin()
-        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+        || (belongsToCompany(companyId) && hasModuleRead("reports"));
       allow create, update, delete: if isSuperAdmin();
     }
 

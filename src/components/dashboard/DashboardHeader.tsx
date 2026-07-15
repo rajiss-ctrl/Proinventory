@@ -102,7 +102,7 @@ const DashboardHeader = ({ onMenuClick }: DashboardHeaderProps) => {
             src={GuestAvatar}
             alt="User"
             className="w-8 h-8 rounded-full object-cover ring-2"
-            style={{ ringColor: "var(--color-border-brand)" }}
+            style={{ borderColor: "var(--color-border-brand)" }}
           />
           <div className="hidden sm:block">
             <p className="text-xs font-semibold leading-none mb-0.5" style={{ color: "var(--color-text-primary)" }}>

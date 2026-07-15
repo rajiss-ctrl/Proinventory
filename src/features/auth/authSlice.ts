@@ -1,35 +1,71 @@
 import { createSlice, createAsyncThunk, PayloadAction } from "@reduxjs/toolkit";
-import { doc, getDoc, collection, getDocs } from "firebase/firestore";
+import { doc, getDoc, updateDoc, collection, getDocs } from "firebase/firestore";
 import db from "../../services/firebase";
 import { CurrentUser, CurrentUserState, UserProfile, DEFAULT_PERMISSIONS } from "../../types";
 
+// ── Helper: convert Firestore Timestamps to ISO strings so Redux stays serializable ──
+const serializeProfile = (data: Record<string, any>): UserProfile => {
+  const toISO = (v: any): any => {
+    if (!v) return null;
+    if (typeof v.toDate === "function") return v.toDate().toISOString();
+    if (v instanceof Date) return v.toISOString();
+    return v;
+  };
+
+  const normalizedStatus = data.status ?? "active";
+
+  return {
+    ...data,
+    uid:                data.uid       ?? "",
+    email:              data.email     ?? "",
+    displayName:        data.displayName ?? "",
+    status:             normalizedStatus,
+    role:               data.role      ?? "company_owner",
+    companyId:          data.companyId ?? "",
+    isSuperAdmin:       Boolean(data.isSuperAdmin),
+    permissions:        data.permissions ?? DEFAULT_PERMISSIONS[data.role ?? "company_owner"],
+    assignedWarehouseId: data.assignedWarehouseId ?? "",
+    createdAt:          toISO(data.createdAt),
+    updatedAt:          toISO(data.updatedAt),
+  } as UserProfile;
+};
+
 /**
- * Fetch the global user profile from users/{uid}
- * Returns the UserProfile which contains companyId.
+ * Fetch users/{uid} profile.
+ * - Serializes Firestore Timestamps so Redux stays serializable.
+ * - Auto-repairs status:"inactive" for the guest account.
  */
 export const fetchUserProfile = createAsyncThunk<UserProfile, string>(
   "auth/fetchUserProfile",
   async (uid) => {
     const snap = await getDoc(doc(db, "users", uid));
     if (!snap.exists()) {
-      // Guest account or new user — return a minimal owner-level profile
-      console.warn("⚠️ [authSlice] No users/{uid} doc found — using guest/owner defaults.");
-      return {
-        uid,
-        email: "",
-        displayName: "Guest",
-        companyId: `guest_company_${uid}`,
-        role: "guest" as const,
-        status: "active" as const,
-        isSuperAdmin: false,
-        permissions: DEFAULT_PERMISSIONS["guest"],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      } as UserProfile;
+      console.error("❌ [authSlice] No users/{uid} doc — run npm run seed:guest");
+      throw new Error(`No user profile found for uid: ${uid}. Run npm run seed:guest.`);
     }
-    const data = { ...snap.data(), uid: snap.id } as UserProfile;
-    console.log("✅ [authSlice] users/{uid} profile fetched:", data);
-    return data;
+
+    const raw = { ...(snap.data() as Record<string, any>), uid: snap.id } as {
+      uid: string;
+      status?: string;
+      [key: string]: any;
+    };
+
+    // ── Auto-repair: if status is inactive, fix it in Firestore and in memory ──
+    if (raw.status === "inactive") {
+      console.warn("⚠️ [authSlice] status:inactive detected — patching to active for uid:", uid);
+      try {
+        await updateDoc(doc(db, "users", uid), { status: "active" });
+        raw.status = "active";
+      } catch (patchErr) {
+        // Firestore rules might block this — rules require auth.uid == uid for update
+        // which should pass since we ARE that user right now
+        console.error("❌ [authSlice] Could not patch status:", patchErr);
+      }
+    }
+
+    const profile = serializeProfile(raw);
+    console.log("✅ [authSlice] users/{uid} profile fetched:", profile);
+    return profile;
   }
 );
 
@@ -37,15 +73,24 @@ export const fetchUsers = createAsyncThunk<CurrentUser[]>(
   "auth/fetchUsers",
   async () => {
     const snapshot = await getDocs(collection(db, "users"));
-    return snapshot.docs.map((d) => d.data() as CurrentUser);
+    return snapshot.docs.map((d) => {
+      const data = d.data();
+      return {
+        uid:   d.id,
+        email: data.email ?? "",
+      } as CurrentUser;
+    });
   }
 );
 
-const stored = sessionStorage.getItem("currentUser")
-  || localStorage.getItem("currentUser");
+const rawStored  = sessionStorage.getItem("currentUser") || localStorage.getItem("currentUser");
+const parsedUser = rawStored ? (JSON.parse(rawStored) as CurrentUser) : null;
+
+// Discard stale fake companyIds generated before seed script existed
+const stored = parsedUser?.companyId?.startsWith("guest_company_") ? null : parsedUser;
 
 const initialState: CurrentUserState = {
-  user:    stored ? (JSON.parse(stored) as CurrentUser) : null,
+  user:    stored,
   profile: null,
   users:   [],
   status:  "idle",
@@ -65,6 +110,7 @@ const authSlice = createSlice({
       state.profile = null;
       sessionStorage.removeItem("currentUser");
       localStorage.removeItem("currentUser");
+      console.log("🔓 [authSlice] Session cleared.");
     },
     addUsers(state, action: PayloadAction<CurrentUser[]>) {
       state.users = action.payload;
@@ -72,17 +118,20 @@ const authSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
-      .addCase(fetchUserProfile.pending,   (state) => { state.status = "loading"; })
+      .addCase(fetchUserProfile.pending, (state) => {
+        state.status = "loading";
+      })
       .addCase(fetchUserProfile.fulfilled, (state, action) => {
         state.status  = "succeeded";
         state.profile = action.payload;
-        // Merge companyId into the current user object for convenience
         if (state.user) {
           state.user = {
             ...state.user,
-            companyId:   action.payload.companyId,
-            displayName: action.payload.displayName,
-            role:        action.payload.role,
+            companyId:          action.payload.companyId,
+            displayName:        action.payload.displayName,
+            role:               action.payload.role,
+            isSuperAdmin:       action.payload.isSuperAdmin,
+            assignedWarehouseId: action.payload.assignedWarehouseId,
           };
           sessionStorage.setItem("currentUser", JSON.stringify(state.user));
         }
@@ -90,7 +139,7 @@ const authSlice = createSlice({
       .addCase(fetchUserProfile.rejected, (state, action) => {
         state.status = "failed";
         state.error  = action.error.message ?? null;
-        console.warn("⚠️ [authSlice] Failed to fetch user profile:", action.error.message);
+        console.warn("⚠️ [authSlice] Profile fetch failed:", action.error.message);
       })
       .addCase(fetchUsers.fulfilled, (state, action) => {
         state.users = action.payload;

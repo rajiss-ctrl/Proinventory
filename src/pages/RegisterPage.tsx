@@ -1,19 +1,19 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import {
-  createUserWithEmailAndPassword,
   GoogleAuthProvider,
   signInWithPopup,
 } from "firebase/auth";
-import { setDoc, doc as docRef } from "firebase/firestore";
 import {
   MdPerson, MdEmail, MdLock, MdBusiness,
   MdPhone, MdPeople, MdVisibility, MdVisibilityOff, MdShield,
 } from "react-icons/md";
 import { FcGoogle } from "react-icons/fc";
-import db, { auth } from "../services/firebase";
+import { auth } from "../services/firebase";
+import { AuthService }    from "../services/auth.service";
+import { CompanyService } from "../services/company.service";
 import { setCurrentUser } from "../features/auth/authSlice";
-import { useDispatch } from "react-redux";
+import { useDispatch }    from "react-redux";
 import AuthLeftPanel from "../components/layout/AuthLeftPanel";
 
 /* ─── Types ──────────────────────────────────────────────── */
@@ -150,74 +150,85 @@ const RegisterPage = () => {
     return Object.keys(e).length === 0;
   };
 
-  /* ── Submit ── */
+  /* ── Submit — Phase 1 onboarding (5 writes via service layer) ── */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
     setLoading(true); setServerErr("");
+
     try {
-      // 1. Create Firebase Auth user
-      const { user } = await createUserWithEmailAndPassword(auth, form.email, form.password);
+      // ── Step 1: Run full Phase 1 onboarding ──────────────────────────────
+      // CompanyService.onboard() writes:
+      //   2. companies/{companyId}
+      //   3. companies/{companyId}/users/{uid}  (via CompanyUserService)
+      //   4. companies/{companyId}/warehouses/main_warehouse
+      //   5. companies/{companyId}/settings/general
+      //   6. companies/{companyId}/settings/roles
+
+      // First create Auth account + users/{uid}  (write #1)
+      // We need companyId before calling AuthService.register, so generate it now
+      const slug      = form.company
+        ? form.company.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")
+        : "company";
+      // Temporary uid placeholder — will be replaced with real uid after auth
+      const { user }  = await (async () => {
+        const { createUserWithEmailAndPassword } = await import("firebase/auth");
+        return createUserWithEmailAndPassword(auth, form.email, form.password);
+      })();
+
+      const companyId = `cmp_${slug}_${user.uid.slice(0, 6)}`;
       console.log("✅ [Register] Firebase Auth user created:", user.uid);
 
-      // 2. Generate a companyId slug from company name
-      const companySlug = form.company
-        ? form.company.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")
-        : `company-${user.uid.slice(0, 6)}`;
-      const companyId = `cmp_${companySlug}_${user.uid.slice(0, 6)}`;
-
-      // 3. Write companies/{companyId} document
-      const companyData = {
-        name:      form.company || form.fullName + "'s Company",
-        slug:      companySlug,
-        email:     form.email,
-        phone:     form.phone     || "",
-        industry:  "",
-        plan:      "free",
-        status:    "active",
-        ownerId:   user.uid,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      await setDoc(docRef(db, "companies", companyId), companyData);
-      console.log("✅ [Register] companies/{companyId} written:", { companyId, ...companyData });
-
-      // 4. Write users/{uid} global profile
-      const userProfile = {
-        uid:          user.uid,
-        email:        user.email ?? "",
-        displayName:  form.fullName,
+      // Write users/{uid} via AuthService
+      const { profile } = await AuthService.register({
+        email:      form.email,
+        password:   form.password, // not used here since user already created
+        fullName:   form.fullName,
         companyId,
-        role:         "company_owner",
-        status:       "active",
-        isSuperAdmin: false,
-        permissions:  { canManageProducts: true, canManageOrders: true, canViewReports: true },
-        authProvider: "local",
-        createdAt:    new Date(),
-        updatedAt:    new Date(),
-      };
-      await setDoc(docRef(db, "users", user.uid), userProfile);
-      console.log("✅ [Register] users/{uid} written:", userProfile);
+        role:       "company_owner",
+      }).catch(async () => {
+        // Auth already created above — just write the Firestore doc
+        const { setDoc, doc } = await import("firebase/firestore");
+        const { default: db } = await import("../services/firebase");
+        const { DEFAULT_PERMISSIONS } = await import("../types");
+        const profile = {
+          uid: user.uid, email: form.email, displayName: form.fullName,
+          companyId, role: "company_owner" as const, status: "active" as const,
+          isSuperAdmin: false, permissions: DEFAULT_PERMISSIONS["company_owner"],
+          createdAt: new Date(), updatedAt: new Date(),
+        };
+        await setDoc(doc(db, "users", user.uid), profile);
+        console.log("✅ [Register] users/{uid} written:", profile);
+        return { user, profile };
+      });
 
-      // 5. Write companies/{companyId}/users/{uid} subcollection
-      const companyUserData = {
+      // Run company onboarding (writes 2–6 above)
+      const { company } = await CompanyService.onboard({
+        ownerId:     user.uid,
+        ownerEmail:  form.email,
+        ownerName:   form.fullName,
+        companyName: form.company || `${form.fullName}'s Company`,
+        phone:       form.phone,
+        industry:    form.role,
+        plan:        "starter",
+      });
+
+      console.log("🎉 [Register] Phase 1 onboarding complete for company:", company.id);
+
+      // Dispatch to Redux + persist session
+      dispatch(setCurrentUser({
         uid:         user.uid,
         email:       user.email ?? "",
-        displayName: form.fullName,
         companyId,
+        displayName: form.fullName,
         role:        "company_owner",
-        status:      "active",
-        createdAt:   new Date(),
-        updatedAt:   new Date(),
-      };
-      await setDoc(docRef(db, "companies", companyId, "users", user.uid), companyUserData);
-      console.log("✅ [Register] companies/{companyId}/users/{uid} written:", companyUserData);
+      }));
+      sessionStorage.setItem("currentUser", JSON.stringify({
+        uid: user.uid, email: user.email, companyId, role: "company_owner",
+      }));
 
-      // 6. Dispatch to Redux
-      dispatch(setCurrentUser({ uid: user.uid, email: user.email ?? "", companyId }));
-      sessionStorage.setItem("currentUser", JSON.stringify({ uid: user.uid, email: user.email, companyId }));
+      navigate("/owner");
 
-      navigate("/dashboard");
     } catch (err: any) {
       console.error("❌ [Register] Error:", err);
       if (err.code === "auth/email-already-in-use") {
@@ -235,10 +246,45 @@ const RegisterPage = () => {
     setLoading(true); setServerErr("");
     try {
       const { user } = await signInWithPopup(auth, new GoogleAuthProvider());
-      const payload  = { uid: user.uid, email: user.email ?? "" };
-      dispatch(setCurrentUser(payload));
-      sessionStorage.setItem("currentUser", JSON.stringify(payload));
-      navigate("/dashboard");
+
+      // Check if already has a profile (returning user)
+      const { getDoc, doc } = await import("firebase/firestore");
+      const { default: db } = await import("../services/firebase");
+      const snap = await getDoc(doc(db, "users", user.uid));
+
+      if (snap.exists()) {
+        // Returning user — just sign in
+        const profile = snap.data();
+        dispatch(setCurrentUser({ uid: user.uid, email: user.email ?? "", companyId: profile.companyId, role: profile.role }));
+        navigate(profile.role === "super_admin" ? "/superadmin" : "/owner");
+        return;
+      }
+
+      // New Google user — run full onboarding
+      const companyName = user.displayName ? `${user.displayName}'s Company` : "My Company";
+      const slug        = companyName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+      const companyId   = `cmp_${slug}_${user.uid.slice(0, 6)}`;
+
+      // Write users/{uid}
+      const { DEFAULT_PERMISSIONS } = await import("../types");
+      await (await import("firebase/firestore")).setDoc(
+        doc(db, "users", user.uid),
+        {
+          uid: user.uid, email: user.email ?? "", displayName: user.displayName ?? "",
+          companyId, role: "company_owner", status: "active", isSuperAdmin: false,
+          permissions: DEFAULT_PERMISSIONS["company_owner"], createdAt: new Date(), updatedAt: new Date(),
+        }
+      );
+
+      // Run company onboarding
+      await CompanyService.onboard({
+        ownerId: user.uid, ownerEmail: user.email ?? "",
+        ownerName: user.displayName ?? "", companyName, plan: "starter",
+      });
+
+      dispatch(setCurrentUser({ uid: user.uid, email: user.email ?? "", companyId, role: "company_owner" }));
+      sessionStorage.setItem("currentUser", JSON.stringify({ uid: user.uid, email: user.email, companyId, role: "company_owner" }));
+      navigate("/owner");
     } catch {
       setServerErr("Google sign-in failed. Please try again.");
     } finally {

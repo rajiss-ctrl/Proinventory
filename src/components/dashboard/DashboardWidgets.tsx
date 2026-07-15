@@ -106,8 +106,13 @@ export const StatCard = ({ title, value, change, sparkData, sparkColor, iconBg, 
 /* ─────────────────────────────────────────────────────────────
    INVENTORY TURNOVER BAR CHART
 ───────────────────────────────────────────────────────────── */
-export const InventoryTurnoverChart = () => {
-  const products = useSelector((s: RootState) => s.stock.productData);
+interface InventoryTurnoverChartProps {
+  productsOverride?: Product[];
+}
+
+export const InventoryTurnoverChart = ({ productsOverride }: InventoryTurnoverChartProps) => {
+  const reduxProducts = useSelector((s: RootState) => s.stock.productData);
+  const products = productsOverride ?? reduxProducts;
 
   const labels = ["Apr 24","Apr 29","May 4","May 9","May 14","May 19","May 24"];
   const soldData    = [8000,12000,15000,10000,18000,14000,20000];
@@ -186,8 +191,13 @@ export const InventoryTurnoverChart = () => {
 /* ─────────────────────────────────────────────────────────────
    STOCK DISTRIBUTION DONUT CHART
 ───────────────────────────────────────────────────────────── */
-export const CategoryDonutChart = () => {
-  const products = useSelector((s: RootState) => s.stock.productData);
+interface CategoryDonutChartProps {
+  productsOverride?: Product[];
+}
+
+export const CategoryDonutChart = ({ productsOverride }: CategoryDonutChartProps) => {
+  const reduxProducts = useSelector((s: RootState) => s.stock.productData);
+  const products = productsOverride ?? reduxProducts;
 
   const categoryMap = useMemo(() => {
     const map: Record<string, number> = {};
@@ -279,8 +289,13 @@ export const CategoryDonutChart = () => {
 /* ─────────────────────────────────────────────────────────────
    LOW STOCK ALERT PANEL
 ───────────────────────────────────────────────────────────── */
-export const LowStockPanel = () => {
-  const products = useSelector((s: RootState) => s.stock.productData);
+interface LowStockPanelProps {
+  productsOverride?: Product[];
+}
+
+export const LowStockPanel = ({ productsOverride }: LowStockPanelProps) => {
+  const reduxProducts = useSelector((s: RootState) => s.stock.productData);
+  const products = productsOverride ?? reduxProducts;
 
   const LOW = 10;
   const lowItems = products
@@ -353,8 +368,13 @@ interface ActivityItem {
   time: string;
 }
 
-export const RecentActivityPanel = () => {
-  const products = useSelector((s: RootState) => s.stock.productData);
+interface RecentActivityPanelProps {
+  productsOverride?: Product[];
+}
+
+export const RecentActivityPanel = ({ productsOverride }: RecentActivityPanelProps) => {
+  const reduxProducts = useSelector((s: RootState) => s.stock.productData);
+  const products = productsOverride ?? reduxProducts;
 
   const activities: ActivityItem[] = useMemo(() => {
     const base: ActivityItem[] = [
@@ -437,10 +457,12 @@ interface ProductsTableProps {
   onEdit?: (id: string) => void;
   onAdd?:  () => void;
   readOnly?: boolean;
+  productsOverride?: Product[];
 }
 
-export const ProductsTable = ({ onEdit, onAdd, readOnly = false }: ProductsTableProps) => {
-  const products = useSelector((s: RootState) => s.stock.productData);
+export const ProductsTable = ({ onEdit, onAdd, readOnly = false, productsOverride }: ProductsTableProps) => {
+  const reduxProducts = useSelector((s: RootState) => s.stock.productData);
+  const products = productsOverride ?? reduxProducts;
 
   const FALLBACK = [
     { id: "f1", product_name: "Wireless Headphones", sku: "SKU-1024", category: "Electronics",  product_Price: 129.99, product_Qty: 3,   size: "Piece" },
@@ -455,7 +477,7 @@ export const ProductsTable = ({ onEdit, onAdd, readOnly = false }: ProductsTable
     ? products.map((p: Product, i: number) => ({
         ...p,
         sku: `SKU-${p.id.slice(0, 4).toUpperCase()}`,
-        category: p.product_description ?? "General",
+        category: p.categoryName || p.product_description || "General",
       }))
     : FALLBACK;
 

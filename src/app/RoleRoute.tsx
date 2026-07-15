@@ -18,11 +18,11 @@ interface RoleRouteProps {
  */
 const RoleRoute = ({ allow, redirectTo = "/dashboard" }: RoleRouteProps) => {
   const user       = useAppSelector((s) => s.auth.user);
+  const profile    = useAppSelector((s) => s.auth.profile);
   const authStatus = useAppSelector((s) => s.auth.status);
 
-  // Wait for profile fetch before making a role decision
-  // (but if role is already set — e.g. guest set it before navigating — proceed immediately)
-  const role = user?.role as UserRole | undefined;
+  // Wait for the authoritative profile role before making a route decision.
+  const role = (profile?.role as UserRole | undefined) ?? (user?.role as UserRole | undefined);
 
   if (!role && authStatus === "loading") {
     return <LoadingSpinner />;

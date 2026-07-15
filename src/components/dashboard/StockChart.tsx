@@ -12,12 +12,12 @@ ChartJS.register(CategoryScale, LinearScale, LineElement, PointElement, Title, T
 
 const THRESHOLD = 1000;
 
-function daysFromTimestamp(ts: FirebaseTimestamp | Date | null | undefined): number {
+function daysFromTimestamp(ts: FirebaseTimestamp | Date | string | null | undefined): number {
   if (!ts) return 0;
   const date =
     typeof (ts as FirebaseTimestamp).toDate === "function"
       ? (ts as FirebaseTimestamp).toDate()
-      : new Date(ts as unknown as string);
+      : new Date(ts as string);
   if (!date || isNaN(date.getTime())) return 0;
   return Math.max(0, Math.floor((Date.now() - date.getTime()) / 86_400_000));
 }
@@ -26,12 +26,12 @@ const StockChart = () => {
   const [alertOpen, setAlertOpen] = useState(true);
   const products = useSelector((s: RootState) => s.stock.productData);
 
-  const labels = products.map((p: Product) => p.product_name);
-  const qtys = products.map((p: Product) => p.product_Qty);
+  const labels = products.map((p: Product) => p.product_name ?? p.name);
+  const qtys = products.map((p: Product) => p.product_Qty ?? p.stockQuantity ?? 0);
   const sales = products.map((p: Product) =>
-    p.initialStock !== undefined ? p.initialStock - p.product_Qty : 0
+    p.initialStock !== undefined ? p.initialStock - (p.product_Qty ?? p.stockQuantity ?? 0) : 0
   );
-  const days = products.map((p: Product) => daysFromTimestamp(p.timestamp));
+  const days = products.map((p: Product) => daysFromTimestamp(p.timestamp ?? null));
 
   const data = {
     labels,
@@ -47,7 +47,7 @@ const StockChart = () => {
     ],
   };
 
-  const fastMoving = products.filter((p: Product) => p.product_Qty <= THRESHOLD && p.timestamp);
+  const fastMoving = products.filter((p: Product) => (p.product_Qty ?? p.stockQuantity ?? 0) <= THRESHOLD && p.timestamp);
 
   return (
     <>
@@ -93,7 +93,7 @@ const StockChart = () => {
         </div>
         <ul className="list-disc list-inside text-gray-700 mt-2 px-4 pb-4 text-xs">
           {fastMoving.map((p: Product) => {
-            const ts = p.timestamp;
+            const ts = p.timestamp ?? null;
             const d =
               ts && typeof (ts as FirebaseTimestamp).toDate === "function"
                 ? (ts as FirebaseTimestamp).toDate()
@@ -101,7 +101,7 @@ const StockChart = () => {
             const count = d && !isNaN(d.getTime()) ? daysFromTimestamp(d) : "N/A";
             return (
               <li key={p.id}>
-                <span className="font-bold">{p.product_name}</span> stocked on{" "}
+                <span className="font-bold">{p.product_name ?? p.name}</span> stocked on{" "}
                 <span className="text-blue-700">{d?.toLocaleDateString() ?? "Unknown"}</span> —{" "}
                 hit {THRESHOLD} units in{" "}
                 <span className="text-red-600">{count} {typeof count === "number" && count !== 1 ? "days" : "day"}</span>.

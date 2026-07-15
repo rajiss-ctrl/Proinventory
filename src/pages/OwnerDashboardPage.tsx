@@ -1,35 +1,64 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import {
-  collection, getDocs, doc,
-  setDoc, updateDoc, deleteDoc,
-} from "firebase/firestore";
-import { createUserWithEmailAndPassword } from "firebase/auth";
-import {
-  MdPeople, MdAdd, MdBlock, MdCheckCircle, MdDelete,
-  MdEdit, MdClose, MdCreditCard, MdDashboard,
+  MdDashboard, MdPeople, MdCreditCard,
+  MdWarehouse, MdCategory, MdInventory2,
+  MdSwapHoriz, MdAdd, MdBlock, MdCheckCircle,
+  MdDelete, MdClose, MdRefresh,
+  MdAttachMoney, MdRemoveShoppingCart, MdShoppingCart,
 } from "react-icons/md";
 import { FaCheck } from "react-icons/fa";
-import db, { auth } from "../services/firebase";
-import useAppSelector from "../hooks/useAppSelector";
-import useRole from "../hooks/useRole";
+import { FiTrash2 } from "react-icons/fi";
+
+import useAppSelector    from "../hooks/useAppSelector";
+import useRole           from "../hooks/useRole";
+import useCompanyAccess  from "../hooks/useCompanyAccess";
+
+import { CompanyUserService }   from "../services/company-user.service";
+import { SubscriptionService }  from "../services/subscription.service";
+import { WarehouseService }     from "../services/warehouse.service";
+import { CategoryService }      from "../services/category.service";
+import { InventoryService }     from "../services/inventory.service";
+import { TransferService }      from "../services/transfer.service";
+import { StockMovementService } from "../services/stock-movement.service";
+
+import TrialBanner   from "../components/ui/TrialBanner";
+import UpgradePrompt from "../components/ui/UpgradePrompt";
+
 import {
   CompanyUser, UserRole, SubscriptionPlan,
-  PLANS, DEFAULT_PERMISSIONS,
+  PLANS, Warehouse, Category, Transfer, StockMovement,
+  InventoryRecord, FirebaseTimestamp, UserStatus, Product,
 } from "../types";
+
 import DashboardSidebar from "../components/dashboard/DashboardSidebar";
 import DashboardHeader  from "../components/dashboard/DashboardHeader";
-import {
-  StatCard, InventoryTurnoverChart,
-  CategoryDonutChart, LowStockPanel,
-  RecentActivityPanel, ProductsTable,
-} from "../components/dashboard/DashboardWidgets";
 import AddProductView   from "../components/dashboard/AddProductView";
 import StockStateEditor from "../components/dashboard/StockStateEditor";
 import {
-  MdAttachMoney, MdInventory2,
-  MdRemoveShoppingCart, MdShoppingCart, MdAdd as MdAddIcon,
-} from "react-icons/md";
-import { Product } from "../types";
+  StatCard, InventoryTurnoverChart, CategoryDonutChart,
+  LowStockPanel, RecentActivityPanel, ProductsTable,
+} from "../components/dashboard/DashboardWidgets";
+
+type OTab = "dashboard"|"staff"|"warehouses"|"categories"|"transfers"|"movements"|"plan";
+type DView = "dashboard"|"add-product";
+type AddStaffForm = {
+  displayName: string;
+  email: string;
+  password: string;
+  role: UserRole;
+};
+type WarehouseForm = {
+  name: string;
+  code: string;
+  address: string;
+  city: string;
+  country: string;
+};
+type CategoryForm = {
+  name: string;
+  description: string;
+};
 
 const SPARKS = {
   value:  [320,380,410,370,450,420,490,510],
@@ -37,50 +66,90 @@ const SPARKS = {
   out:    [12,8,14,10,18,12,20,15],
   orders: [5,8,6,10,7,9,8,6],
 };
+const STAFF_ROLES: UserRole[] = ["staff","company_admin"];
 
-const STAFF_ROLES: UserRole[] = ["staff", "company_admin"];
-
-type OTab = "dashboard" | "staff" | "plan";
-type DView = "dashboard" | "add-product";
-
-const INPUT_STYLE = {
-  background: "var(--color-input-bg)",
-  border: "1px solid var(--color-input-border)",
-  color: "var(--color-input-text)",
-  borderRadius: "0.75rem",
-  padding: "0.625rem 0.875rem",
-  fontSize: "0.875rem",
-  outline: "none",
-  width: "100%",
+const S: React.CSSProperties = {
+  background:"var(--color-input-bg)",
+  border:"1px solid var(--color-input-border)",
+  color:"var(--color-input-text)",
+  borderRadius:"0.75rem",
+  padding:"0.625rem 0.875rem",
+  fontSize:"0.875rem",
+  outline:"none",
+  width:"100%",
 };
 
-/* ─── Add Staff Modal ─────────────────────────────────────── */
-interface AddStaffModalProps {
-  companyId: string;
-  onClose: () => void;
-  onAdded: () => void;
-}
-const AddStaffModal = ({ companyId, onClose, onAdded }: AddStaffModalProps) => {
-  const [form, setForm]       = useState({ displayName: "", email: "", password: "", role: "staff" as UserRole });
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState("");
+/* ─── Reusable panel wrapper ───────────────────────────────── */
+const Panel = ({ children }: { children: React.ReactNode }) => (
+  <div className="rounded-2xl overflow-hidden"
+    style={{ background:"var(--color-surface-1)", border:"1px solid var(--color-border-soft)" }}>
+    {children}
+  </div>
+);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+/* ─── Table header helper ──────────────────────────────────── */
+const TH = ({ h }: { h: string }) => (
+  <th className="px-4 py-3 text-left font-semibold uppercase tracking-wide text-xs"
+    style={{ color:"var(--color-text-faint)" }}>{h}</th>
+);
+
+/* ─── Spinner ──────────────────────────────────────────────── */
+const Spinner = ({ colSpan = 9 }: { colSpan?: number }) => (
+  <tr><td colSpan={colSpan} className="text-center py-10">
+    <div className="w-5 h-5 border-2 border-t-transparent rounded-full animate-spin mx-auto"
+      style={{ borderColor:"var(--color-brand-primary)" }}/>
+  </td></tr>
+);
+
+/* ─── Add Staff Modal ──────────────────────────────────────── */
+const AddStaffModal = ({
+  companyId, onClose, onAdded, warehouses,
+}: {
+  companyId:string;
+  onClose:()=>void;
+  onAdded:()=>void;
+  warehouses: Warehouse[];
+}) => {
+  const [form, setForm] = useState<AddStaffForm & { assignedWarehouseId: string }>({
+    displayName: "",
+    email: "",
+    password: "",
+    role: "staff",
+    assignedWarehouseId: "",
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true); setError("");
+    setLoading(true);
+    setError("");
+
+    const email = form.email.trim().toLowerCase();
+    const password = form.password.trim();
+
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters long.");
+      setLoading(false);
+      return;
+    }
+
     try {
-      const { user } = await createUserWithEmailAndPassword(auth, form.email, form.password);
-      const perms = DEFAULT_PERMISSIONS[form.role];
-      const data: Omit<CompanyUser, "createdAt" | "updatedAt"> & { createdAt: Date; updatedAt: Date } = {
-        uid: user.uid, email: form.email, displayName: form.displayName,
-        companyId, role: form.role, status: "active", permissions: perms,
-        createdAt: new Date(), updatedAt: new Date(),
-      };
-      await setDoc(doc(db, "users", user.uid), { ...data, isSuperAdmin: false });
-      await setDoc(doc(db, "companies", companyId, "users", user.uid), data);
-      onAdded(); onClose();
-    } catch (err: any) {
-      setError(err.message ?? "Failed to add staff member.");
+      await CompanyUserService.invite({
+        email,
+        password,
+        displayName: form.displayName.trim(),
+        companyId,
+        role: form.role,
+        assignedWarehouseId: form.assignedWarehouseId || undefined,
+      });
+      onAdded();
+      onClose();
+    } catch (err: unknown) {
+      const message = err instanceof Error
+        ? err.message
+        : "Failed to add staff.";
+      setError(message.replace(/^Firebase:\s*/i, ""));
     } finally {
       setLoading(false);
     }
@@ -88,56 +157,46 @@ const AddStaffModal = ({ companyId, onClose, onAdded }: AddStaffModalProps) => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div
-        className="w-full max-w-md rounded-2xl p-6"
-        style={{ background: "var(--color-surface-2)", border: "1px solid var(--color-border-brand)", boxShadow: "var(--shadow-card)" }}
-      >
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>Add Staff Member</h2>
-          <button onClick={onClose} style={{ color: "var(--color-text-muted)" }}><MdClose size={18} /></button>
+      <div className="w-full max-w-md rounded-2xl p-6"
+        style={{ background:"var(--color-surface-2)", border:"1px solid var(--color-border-brand)", boxShadow:"var(--shadow-card)" }}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold" style={{ color:"var(--color-text-primary)" }}>Add Staff Member</h2>
+          <button onClick={onClose} style={{ color:"var(--color-text-muted)" }}><MdClose size={18}/></button>
         </div>
         {error && (
-          <div className="mb-4 p-3 rounded-lg text-xs" style={{ background: "var(--color-danger-soft)", color: "var(--color-danger)", border: "1px solid var(--color-danger-border)" }}>
-            {error}
-          </div>
+          <div className="mb-3 p-3 rounded-lg text-xs"
+            style={{ background:"var(--color-danger-soft)", color:"var(--color-danger)" }}>{error}</div>
         )}
-        <form onSubmit={handleSubmit} className="space-y-3">
-          {[
-            { label: "Full Name", key: "displayName", type: "text", placeholder: "Jane Smith" },
-            { label: "Email",     key: "email",       type: "email", placeholder: "jane@company.com" },
-            { label: "Password",  key: "password",    type: "password", placeholder: "Min 8 characters" },
-          ].map(({ label, key, type, placeholder }) => (
-            <div key={key}>
-              <label className="block text-xs font-medium mb-1" style={{ color: "var(--color-text-secondary)" }}>{label}</label>
-              <input
-                type={type}
-                value={(form as any)[key]}
-                onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))}
-                placeholder={placeholder}
-                required
-                style={INPUT_STYLE}
-              />
-            </div>
-          ))}
+        <form onSubmit={submit} className="space-y-3">
+          {[{l:"Full Name",k:"displayName",t:"text"},{l:"Email",k:"email",t:"email"},{l:"Password",k:"password",t:"password"}]
+            .map(({l,k,t})=>(
+              <div key={k}>
+                <label className="block text-xs font-medium mb-1" style={{ color:"var(--color-text-secondary)" }}>{l}</label>
+                <input type={t} value={form[k]}
+                  onChange={e=>setForm(p=>({...p,[k]:e.target.value}))} required style={S}/>
+              </div>
+            ))}
           <div>
-            <label className="block text-xs font-medium mb-1" style={{ color: "var(--color-text-secondary)" }}>Role</label>
-            <select
-              value={form.role}
-              onChange={(e) => setForm((p) => ({ ...p, role: e.target.value as UserRole }))}
-              style={INPUT_STYLE}
-            >
-              {STAFF_ROLES.map((r) => (
-                <option key={r} value={r}>{r === "staff" ? "Staff (Read + Add)" : "Company Admin (Full minus delete)"}</option>
+            <label className="block text-xs font-medium mb-1" style={{ color:"var(--color-text-secondary)" }}>Role</label>
+            <select value={form.role} onChange={e=>setForm(p=>({...p,role:e.target.value as UserRole}))} style={S}>
+              {STAFF_ROLES.map(r=>(
+                <option key={r} value={r}>{r==="staff"?"Staff (Read + Add products)":"Company Admin (Full minus delete)"}</option>
               ))}
             </select>
           </div>
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2.5 rounded-xl text-sm font-semibold mt-2 disabled:opacity-50"
-            style={{ background: "var(--color-brand-primary)", color: "white" }}
-          >
-            {loading ? "Adding…" : "Add Staff Member"}
+          <div>
+            <label className="block text-xs font-medium mb-1" style={{ color:"var(--color-text-secondary)" }}>Assigned Warehouse</label>
+            <select value={form.assignedWarehouseId} onChange={e=>setForm(p=>({...p,assignedWarehouseId:e.target.value}))} style={S}>
+              <option value="">No warehouse assigned</option>
+              {warehouses.map((warehouse) => (
+                <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
+              ))}
+            </select>
+          </div>
+          <button type="submit" disabled={loading}
+            className="w-full py-2.5 rounded-xl text-sm font-semibold disabled:opacity-50"
+            style={{ background:"var(--color-brand-primary)", color:"white" }}>
+            {loading?"Adding…":"Add Staff Member"}
           </button>
         </form>
       </div>
@@ -145,281 +204,1232 @@ const AddStaffModal = ({ companyId, onClose, onAdded }: AddStaffModalProps) => {
   );
 };
 
-/* ─── Page ───────────────────────────────────────────────── */
+/* ─── Main Page ────────────────────────────────────────────── */
 const OwnerDashboardPage = () => {
-  const { profile } = useRole();
-  const companyId   = useAppSelector((s) => s.auth.user?.companyId) ?? "";
-  const company     = useAppSelector((s) => s.company.company);
-  const products    = useAppSelector((s) => s.stock.productData);
+  const companyId          = useAppSelector(s=>s.auth.profile?.companyId ?? s.auth.user?.companyId)??"";
+  const company            = useAppSelector(s=>s.company.company);
+  const products           = useAppSelector(s=>s.stock.productData);
+  const location           = useLocation();
+  const { profile, isOwner, canDeleteProduct, hasWarehouseScope, assignedWarehouseId } = useRole();
+  const { hasAccess, isTrial, daysLeft, isGuest } = useCompanyAccess();
 
-  const [oTab,          setOTab]          = useState<OTab>("dashboard");
-  const [dView,         setDView]         = useState<DView>("dashboard");
-  const [sideCollapsed, setSideCollapsed] = useState(false);
-  const [staffList,     setStaffList]     = useState<CompanyUser[]>([]);
-  const [showAddStaff,  setShowAddStaff]  = useState(false);
-  const [editItemId,    setEditItemId]    = useState<string | null>(null);
+  const canViewWarehouse = (
+    warehouseId: string, 
+    role?: string, 
+    assignedId?: string, 
+    isDefault?: boolean
+  ) => {
+    // Owners and Admins can see absolutely every warehouse (essential for transfers!)
+    if (role === 'company_owner' || role === 'company_admin') {
+      return true;
+    }
+    
+    // Staff can ONLY see their assigned warehouse or the fallback default
+    return isDefault || warehouseId === 'main_warehouse' || warehouseId === assignedId;
+  };
 
-  const sideW = sideCollapsed ? 64 : 220;
+  const [oTab,    setOTab]    = useState<OTab>("dashboard");
+  const [dView,   setDView]   = useState<DView>("dashboard");
+  const [sideCol, setSideCol] = useState(false);
+  const [editId,  setEditId]  = useState<string|null>(null);
 
-  const loadStaff = async () => {
+  const [staff, setStaff] = useState<CompanyUser[]>([]);
+  const [staffLoading, setStaffLoading] = useState(false);
+  const [staffError, setStaffError] = useState("");
+  const [showAddStaff, setShowAddStaff] = useState(false);
+
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [warehouseInventory, setWarehouseInventory] = useState<Record<string, InventoryRecord[]>>({});
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>("");
+  const [whLoading, setWhLoading] = useState(false);
+  const [showAddWh, setShowAddWh] = useState(false);
+  const [whForm, setWhForm] = useState<WarehouseForm>({
+    name: "",
+    code: "",
+    address: "",
+    city: "",
+    country: "",
+  });
+
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [catLoading, setCatLoading] = useState(false);
+  const [showAddCat, setShowAddCat] = useState(false);
+  const [catForm, setCatForm] = useState<CategoryForm>({
+    name: "",
+    description: "",
+  });
+
+  const [transfers,  setTransfers]  = useState<Transfer[]>([]);
+  const [movements,  setMovements]  = useState<StockMovement[]>([]);
+  const [trfLoading, setTrfLoading] = useState(false);
+  const [transferAlerts, setTransferAlerts] = useState(0);
+  const [transferMessages, setTransferMessages] = useState(0);
+  const [transferForm, setTransferForm] = useState({
+    fromWarehouseId: "",
+    toWarehouseId: "",
+    productId: "",
+    quantity: 1,
+    notes: "",
+  });
+  const [transferRequestError, setTransferRequestError] = useState("");
+  const [transferRequestLoading, setTransferRequestLoading] = useState(false);
+
+  useEffect(() => {
+    const tabParam = new URLSearchParams(location.search).get("tab");
+    const allowedTabs: OTab[] = ["dashboard", "staff", "warehouses", "categories", "transfers", "movements", "plan"];
+    if (tabParam && allowedTabs.includes(tabParam as OTab)) {
+      setOTab(tabParam as OTab);
+    }
+  }, [location.search]);
+
+  const sideW = sideCol?64:220;
+
+  const defaultPreviewWarehouseId = warehouses.find((warehouse) => warehouse.isDefault)?.id
+    ?? warehouses.find((warehouse) => warehouse.id === "main_warehouse")?.id
+    ?? warehouses[0]?.id
+    ?? "";
+
+  const previewWarehouseId = hasWarehouseScope && assignedWarehouseId
+    ? assignedWarehouseId
+    : selectedWarehouseId || defaultPreviewWarehouseId;
+
+  const displayedProducts = useMemo(() => {
+    if (!previewWarehouseId) {
+      return [];
+    }
+
+    const warehouseItems = warehouseInventory[previewWarehouseId] ?? [];
+    if (warehouseItems.length === 0) {
+      return [];
+    }
+
+    const inventoryByProductId = new Map(
+      warehouseItems.map((item) => [item.productId, item])
+    );
+
+    return products
+      .filter((product) => inventoryByProductId.has(product.id))
+      .map((product) => {
+        const warehouseItem = inventoryByProductId.get(product.id);
+
+        return {
+          ...product,
+          stockQuantity: warehouseItem?.quantity ?? product.stockQuantity ?? 0,
+          product_Qty: warehouseItem?.quantity ?? product.product_Qty ?? product.stockQuantity ?? 0,
+          product_name: product.name,
+          product_description: product.categoryName,
+          product_Price: product.price,
+          img: product.imageUrl ?? product.img,
+        } satisfies Product;
+      });
+  }, [previewWarehouseId, products, warehouseInventory]);
+
+  const totalValue = displayedProducts.reduce((a,p)=>a+((p.stockQuantity ?? p.product_Qty ?? 0)*(p.price ?? p.product_Price ?? 0)),0);
+  const totalStock = displayedProducts.reduce((a,p)=>a+(p.stockQuantity ?? p.product_Qty ?? 0),0);
+  const outOfStock = displayedProducts.filter(p=>(p.stockQuantity ?? p.product_Qty ?? 0)===0).length;
+  const lowStock   = displayedProducts.filter(p=>((p.stockQuantity ?? p.product_Qty ?? 0)>0)&&((p.stockQuantity ?? p.product_Qty ?? 0)<=10)).length;
+  const editItem   = products.find(p=>p.id===editId);
+
+  /* ── Data loaders ── */
+  const loadStaff = useCallback(async (cid = companyId) => {
+    if (!cid) return;
+    setStaffLoading(true);
+    setStaffError("");
+    try {
+      const all = await CompanyUserService.list(cid);
+      const ownerUid = company?.ownerId ?? profile?.uid;
+      const members = all.filter(
+        (u) => u.uid !== ownerUid && u.role !== "company_owner"
+      );
+      
+      setStaff(members);
+    } catch (e: unknown) {
+      const errorCode = typeof e === "object" && e !== null && "code" in e ? String((e as { code?: string }).code) : undefined;
+      const errorMessage = e instanceof Error ? e.message : "Failed to load staff.";
+      console.error("[Staff] Failed to load:", errorCode, errorMessage);
+      setStaffError(
+        errorCode === "permission-denied"
+          ? "Permission denied reading staff. Ensure Firestore rules are published."
+          : errorMessage
+      );
+    } finally {
+      setStaffLoading(false);
+    }
+  }, [company?.ownerId, companyId, profile?.uid]);
+
+  const loadWarehouses = useCallback(async (cid = companyId) => {
+    if (!cid) return;
+    setWhLoading(true);
+    try {
+      const list = await WarehouseService.list(cid);
+
+      // Filter using canViewWarehouse:
+      const scopedList = list.filter((wh) =>
+        canViewWarehouse(wh.id, profile?.role, assignedWarehouseId, wh.isDefault)
+      );
+      const sorted = scopedList.sort((a, b) => a.name.localeCompare(b.name));
+      const inventoryMap: Record<string, InventoryRecord[]> = {};
+      const inventoryLists = await Promise.all(
+        sorted.map((warehouse) => InventoryService.listByWarehouse(cid, warehouse.id))
+      );
+
+      sorted.forEach((warehouse, index) => {
+        inventoryMap[warehouse.id] = inventoryLists[index]
+          .sort((a, b) => a.productName.localeCompare(b.productName));
+      });
+
+      // Update both states
+      setWarehouses(sorted);
+      setWarehouseInventory(inventoryMap);
+      
+      // If we have a preview warehouse, ensure it's selected
+      if (previewWarehouseId && sorted.some(w => w.id === previewWarehouseId)) {
+        setSelectedWarehouseId(previewWarehouseId);
+      }
+    } catch (error) {
+      console.error("Failed to load warehouses:", error);
+    } finally {
+      setWhLoading(false);
+    }
+  }, [assignedWarehouseId, companyId, profile?.role, previewWarehouseId]);
+
+  const loadCategories = useCallback(async (cid = companyId) => {
+    if (!cid) return;
+    setCatLoading(true);
+    try {
+      setCategories(await CategoryService.list(cid));
+    } finally {
+      setCatLoading(false);
+    }
+  }, [companyId]);
+
+  const loadTransfers = useCallback(async (cid = companyId) => {
+    if (!cid) return;
+    setTrfLoading(true);
+    try {
+      const [t, m] = await Promise.all([
+        TransferService.list(cid),
+        StockMovementService.listRecent(cid, 30),
+      ]);
+
+      const scopedTransfers = hasWarehouseScope && assignedWarehouseId
+        ? t.filter((transfer) =>
+            transfer.fromWarehouseId === assignedWarehouseId ||
+            transfer.toWarehouseId === assignedWarehouseId
+          )
+        : t;
+
+      const pending = scopedTransfers.filter((transfer) =>
+        transfer.status === "draft" ||
+        transfer.status === "pending" ||
+        transfer.status === "in_transit"
+      ).length;
+      const received = scopedTransfers.filter((transfer) => transfer.status === "completed").length;
+
+      setTransfers(scopedTransfers);
+      setMovements(m);
+      setTransferAlerts(pending);
+      setTransferMessages(received);
+    } finally {
+      setTrfLoading(false);
+    }
+  }, [assignedWarehouseId, companyId, hasWarehouseScope]);
+
+
+  const toDate = (timestamp: Date | FirebaseTimestamp | undefined): Date => {
+    if (!timestamp) return new Date();
+    if (timestamp instanceof Date) return timestamp;
+    if (typeof timestamp === 'object' && 'toDate' in timestamp) {
+      return (timestamp as FirebaseTimestamp).toDate();
+    }
+    return new Date();
+  };
+
+  // Load warehouses when dashboard is active (so products preview works)
+  useEffect(() => {
+    if (oTab === "dashboard" && companyId) {
+      loadWarehouses();
+    }
+  }, [oTab, companyId, loadWarehouses]);
+
+  // Load warehouses on initial mount for dashboard preview
+  useEffect(() => {
+    if (companyId) {
+      loadWarehouses();
+    }
+  }, [companyId, loadWarehouses]);
+
+  
+  useEffect(() => {
     if (!companyId) return;
-    const snap = await getDocs(collection(db, "companies", companyId, "users"));
-    setStaffList(snap.docs.map((d) => ({ ...d.data(), uid: d.id } as CompanyUser)));
+    if (oTab === "staff") loadStaff();
+    if (oTab === "warehouses") loadWarehouses();
+    if (oTab === "categories") loadCategories();
+    if (oTab === "transfers" || oTab === "movements") loadTransfers();
+  }, [oTab, companyId, loadStaff, loadWarehouses, loadCategories, loadTransfers]);
+
+  useEffect(() => {
+    if (!hasWarehouseScope || !assignedWarehouseId || transferForm.fromWarehouseId) return;
+    setTransferForm((p) => ({ ...p, fromWarehouseId: assignedWarehouseId }));
+  }, [assignedWarehouseId, hasWarehouseScope, transferForm.fromWarehouseId]);
+
+  useEffect(() => {
+    if (warehouses.length === 0) return;
+
+    const preferredWarehouseId = hasWarehouseScope && assignedWarehouseId
+      ? assignedWarehouseId
+      : defaultPreviewWarehouseId;
+
+    if (!preferredWarehouseId) return;
+
+    setSelectedWarehouseId((current) => current && warehouses.some((warehouse) => warehouse.id === current)
+      ? current
+      : preferredWarehouseId);
+  }, [assignedWarehouseId, defaultPreviewWarehouseId, hasWarehouseScope, warehouses]);
+
+  /* ── Staff actions ── */
+  const toggleStatus = async (uid: string, cur: UserStatus) => {
+    await CompanyUserService.toggleStatus(companyId, uid, cur);
+    const nextStatus: UserStatus = cur === "active" ? "inactive" : "active";
+    setStaff((p) => p.map((u) => (u.uid === uid ? { ...u, status: nextStatus } : u)));
+  };
+  const removeStaff = async(uid:string)=>{
+    if(!confirm("Remove this staff member?")) return;
+    await CompanyUserService.remove(companyId,uid);
+    setStaff(p=>p.filter(u=>u.uid!==uid));
+  };
+  const updateRole = async(uid:string,role:UserRole)=>{
+    await CompanyUserService.updateRole(companyId,uid,role);
+    setStaff(p=>p.map(u=>u.uid===uid?{...u,role}:u));
+  };
+  const updateWarehouseAssignment = async(uid:string, assignedWarehouseId?: string)=>{
+    await CompanyUserService.updateWarehouseAssignment(companyId, uid, assignedWarehouseId);
+    setStaff(p=>p.map(u=>u.uid===uid?{...u, assignedWarehouseId}:u));
   };
 
-  useEffect(() => { if (oTab === "staff") loadStaff(); }, [oTab, companyId]);
-
-  const toggleStaffStatus = async (uid: string, status: string) => {
-    const next = status === "active" ? "inactive" : "active";
-    await updateDoc(doc(db, "companies", companyId, "users", uid), { status: next });
-    await updateDoc(doc(db, "users", uid), { status: next });
-    setStaffList((p) => p.map((u) => u.uid === uid ? { ...u, status: next as any } : u));
+  /* ── Warehouse actions ── */
+  const addWarehouse = async(e:React.FormEvent)=>{
+    e.preventDefault();
+    await WarehouseService.create({ companyId, createdBy:profile?.uid??"", ...whForm });
+    setWhForm({name:"",code:"",address:"",city:"",country:""}); setShowAddWh(false);
+    loadWarehouses();
+  };
+  const deleteWarehouse = async(id:string)=>{
+    if(!confirm("Delete this warehouse?")) return;
+    await WarehouseService.delete(companyId,id); loadWarehouses();
   };
 
-  const removeStaff = async (uid: string) => {
-    if (!confirm("Remove this staff member?")) return;
-    await deleteDoc(doc(db, "companies", companyId, "users", uid));
-    setStaffList((p) => p.filter((u) => u.uid !== uid));
+  /* ── Category actions ── */
+  const addCategory = async(e:React.FormEvent)=>{
+    e.preventDefault();
+    await CategoryService.create({ companyId, createdBy:profile?.uid??"", ...catForm });
+    setCatForm({name:"",description:""}); setShowAddCat(false); loadCategories();
+  };
+  const deleteCategory = async(id:string)=>{
+    if(!confirm("Delete category?")) return;
+    await CategoryService.delete(companyId,id); loadCategories();
   };
 
-  const updateRole = async (uid: string, role: UserRole) => {
-    const perms = DEFAULT_PERMISSIONS[role];
-    await updateDoc(doc(db, "companies", companyId, "users", uid), { role, permissions: perms });
-    await updateDoc(doc(db, "users", uid), { role, permissions: perms });
-    setStaffList((p) => p.map((u) => u.uid === uid ? { ...u, role, permissions: perms } : u));
-  };
-
-  const updatePlan = async (plan: SubscriptionPlan) => {
+  // ============================================================
+  // REFRESH FUNCTION - AFTER loadWarehouses, BEFORE transfer actions
+  // ============================================================
+  const refreshProductsPreview = useCallback(async () => {
     if (!companyId) return;
-    await updateDoc(doc(db, "companies", companyId), { plan, updatedAt: new Date() });
+    
+    // Reload warehouses to get latest inventory
+    await loadWarehouses();
+    
+    // If we have a preview warehouse, force it to re-select
+    if (previewWarehouseId) {
+      setSelectedWarehouseId(previewWarehouseId);
+    }
+  }, [companyId, loadWarehouses, previewWarehouseId]);
+
+  // ============================================================
+  // TRANSFER ACTIONS - AFTER refreshProductsPreview
+  // ============================================================
+  const canRequestTransfer = !!transferForm.fromWarehouseId && !!transferForm.toWarehouseId && !!transferForm.productId;
+  
+  const transferInventoryItems = transferForm.fromWarehouseId
+    ? (warehouseInventory[transferForm.fromWarehouseId] ?? []).filter((item) => item.quantity > 0)
+    : [];
+  
+  const selectedInventoryItem = transferInventoryItems.find((item) => item.productId === transferForm.productId);
+  
+  const availableTransferQty = Math.max(1, selectedInventoryItem?.quantity ?? 0);
+
+  const requestTransfer = async(e: React.FormEvent) => {
+    e.preventDefault();
+    setTransferRequestError("");
+
+    if (!companyId) return;
+    if (!transferForm.fromWarehouseId || !transferForm.toWarehouseId) {
+      setTransferRequestError("Please choose both source and destination warehouses.");
+      return;
+    }
+    if (transferForm.fromWarehouseId === transferForm.toWarehouseId) {
+      setTransferRequestError("The destination warehouse must be different from the source warehouse.");
+      return;
+    }
+    
+    // Find the selected product
+    const selectedProduct = products.find(p => p.id === transferForm.productId);
+    if (!selectedProduct) {
+      setTransferRequestError("Please select a valid product.");
+      return;
+    }
+
+    // Find inventory item in source warehouse
+    const inventoryItem = transferInventoryItems.find(
+      (item) => item.productId === transferForm.productId
+    );
+    
+    if (!inventoryItem || inventoryItem.quantity <= 0) {
+      setTransferRequestError("The selected product has no available quantity in the source warehouse.");
+      return;
+    }
+
+    const quantity = Math.min(
+      Number(transferForm.quantity) || 1,
+      inventoryItem.quantity
+    );
+
+    if (quantity <= 0) {
+      setTransferRequestError("Quantity must be greater than 0.");
+      return;
+    }
+
+    setTransferRequestLoading(true);
+    try {
+      await TransferService.create({
+        companyId,
+        createdBy: profile?.uid ?? "",
+        fromWarehouseId: transferForm.fromWarehouseId,
+        fromWarehouseName: warehouses.find((w) => w.id === transferForm.fromWarehouseId)?.name ?? transferForm.fromWarehouseId,
+        toWarehouseId: transferForm.toWarehouseId,
+        toWarehouseName: warehouses.find((w) => w.id === transferForm.toWarehouseId)?.name ?? transferForm.toWarehouseId,
+        items: [{
+          productId: selectedProduct.id,
+          productName: selectedProduct.name,
+          sku: selectedProduct.sku,
+          quantity,
+        }],
+        notes: transferForm.notes,
+      });
+      
+      // Reset form
+      setTransferForm({ 
+        fromWarehouseId: "", 
+        toWarehouseId: "", 
+        productId: "", 
+        quantity: 1, 
+        notes: "" 
+      });
+      
+      // Load transfers and refresh products preview
+      await Promise.all([
+        loadTransfers(),
+        refreshProductsPreview()
+      ]);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unable to create transfer request.";
+      setTransferRequestError(message.replace(/^Firebase:\s*/i, ""));
+    } finally {
+      setTransferRequestLoading(false);
+    }
   };
 
-  /* Derived metrics */
-  const totalValue = products.reduce((a: number, p: Product) => a + (p.stockQuantity ?? 0) * (p.price ?? 0), 0);
-  const totalStock = products.reduce((a: number, p: Product) => a + (p.stockQuantity ?? 0), 0);
-  const outOfStock = products.filter((p: Product) => (p.stockQuantity ?? 0) === 0).length;
-  const lowStock   = products.filter((p: Product) => (p.stockQuantity ?? 0) > 0 && (p.stockQuantity ?? 0) <= 10).length;
+  const updateTransfer = async(id: string, status: Transfer["status"]) => {
+    try {
+      if (status === "completed") {
+        await TransferService.confirmReceipt(companyId, id, profile?.uid ?? "", assignedWarehouseId);
+      } else {
+        await TransferService.updateStatus(companyId, id, status);
+      }
+      
+      // Load transfers and refresh products preview
+      await Promise.all([
+        loadTransfers(),
+        refreshProductsPreview()
+      ]);
+    } catch (error) {
+      console.error("Failed to update transfer:", error);
+      // Show error to user
+    }
+  };
 
-  const editItem = products.find((p: Product) => p.id === editItemId);
+  const canCreateTransfer = isOwner || hasWarehouseScope;
 
+  /* ── Plan ── */
+  const updatePlan = async(plan:SubscriptionPlan)=>{
+    await SubscriptionService.upgrade(companyId,plan);
+  };
+
+  const TABS: {id:OTab;icon:React.ReactNode;label:string}[] = [
+    {id:"dashboard",  icon:<MdDashboard size={15}/>,  label:"Dashboard"},
+    ...(isOwner ? [{id:"staff" as OTab, icon:<MdPeople size={15}/>, label:"Staff"}] : []),
+    {id:"warehouses", icon:<MdWarehouse size={15}/>,  label:"Warehouses"},
+    {id:"categories", icon:<MdCategory size={15}/>,   label:"Categories"},
+    {id:"transfers",  icon:<MdSwapHoriz size={15}/>,  label:"Transfers"},
+    {id:"movements",  icon:<MdInventory2 size={15}/>, label:"Stock Log"},
+    ...(isOwner ? [{id:"plan" as OTab, icon:<MdCreditCard size={15}/>, label:"Subscription"}] : []),
+  ];
+
+  // ============================================================
+  // RETURN STATEMENT - All variables must be defined above this
+  // ============================================================
   return (
-    <div className="min-h-screen" style={{ background: "var(--color-bg-app)" }}>
+    <div className="min-h-screen" style={{ background:"var(--color-bg-app)" }}>
       <DashboardSidebar
-        onNewItem={() => { setOTab("dashboard"); setDView("add-product"); }}
-        collapsed={sideCollapsed}
-        onToggleCollapse={() => setSideCollapsed((p) => !p)}
-        activeView={dView === "add-product" ? "add-product" : "dashboard"}
+        onNewItem={()=>{ setOTab("dashboard"); setDView("add-product"); }}
+        collapsed={sideCol}
+        onToggleCollapse={()=>setSideCol(p=>!p)}
+        activeView={dView==="add-product"?"add-product":"dashboard"}
+        alertCount={transferAlerts}
+        messageCount={transferMessages}
+        onAlertsClick={() => setOTab("transfers")}
       />
-      <DashboardHeader onMenuClick={() => setSideCollapsed((p) => !p)} />
+      <DashboardHeader onMenuClick={()=>setSideCol(p=>!p)}/>
 
-      <main className="transition-all duration-300 pt-14 min-h-screen" style={{ marginLeft: `${sideW}px` }}>
+      <main className="transition-all duration-300 pt-14 min-h-screen"
+        style={{ marginLeft:`${sideW}px` }}>
 
-        {/* ── Owner tab bar ── */}
-        <div
-          className="flex items-center gap-1 px-5 pt-5 pb-0"
-          style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
-        >
-          {([
-            { id: "dashboard", icon: <MdDashboard size={15} />, label: "Dashboard" },
-            { id: "staff",     icon: <MdPeople size={15} />,    label: "Staff Management" },
-            { id: "plan",      icon: <MdCreditCard size={15} />, label: "Subscription" },
-          ] as { id: OTab; icon: React.ReactNode; label: string }[]).map(({ id, icon, label }) => (
-            <button
-              key={id}
-              onClick={() => { setOTab(id); if (id === "dashboard") setDView("dashboard"); }}
-              className="flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-all border-b-2"
+        {/* ── Trial banner ── */}
+        <TrialBanner/>
+
+        {/* ── Tab bar ── */}
+        <div className="flex items-center gap-0.5 px-5 pt-4 pb-0 overflow-x-auto"
+          style={{ borderBottom:"1px solid var(--color-border-subtle)" }}>
+          {TABS.map(({id,icon,label})=>(
+            <button key={id}
+              onClick={()=>{ setOTab(id); if(id==="dashboard") setDView("dashboard"); }}
+              className="flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 shrink-0"
               style={{
-                color:       oTab === id ? "var(--color-brand-primary-soft)" : "var(--color-text-muted)",
-                borderColor: oTab === id ? "var(--color-brand-primary-soft)" : "transparent",
+                color:       oTab===id?"var(--color-brand-primary-soft)":"var(--color-text-muted)",
+                borderColor: oTab===id?"var(--color-brand-primary-soft)":"transparent",
                 background:  "transparent",
-              }}
-            >
+              }}>
               {icon} {label}
             </button>
           ))}
         </div>
 
         {/* ══ DASHBOARD TAB ══ */}
-        {oTab === "dashboard" && (
-          dView === "add-product" ? (
-            <AddProductView onCancel={() => setDView("dashboard")} onSaved={() => setDView("dashboard")} />
-          ) : (
-            <div className="p-5 flex flex-col gap-5">
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-                <StatCard title="Total Inventory Value" value={products.length > 0 ? `$${totalValue.toLocaleString("en-US",{minimumFractionDigits:2})}` : "$4,289,109.00"} change={5.2} sparkData={SPARKS.value} sparkColor="var(--color-chart-indigo)" iconBg="var(--color-nav-active-bg)" icon={<MdAttachMoney size={18} style={{ color: "var(--color-brand-primary-soft)" }} />} />
-                <StatCard title="Stock on Hand"         value={products.length > 0 ? totalStock.toLocaleString() : "32,145"} change={3.7} sparkData={SPARKS.stock} sparkColor="var(--color-chart-green)" iconBg="var(--color-stock-in-soft)"  icon={<MdInventory2 size={18} style={{ color: "var(--color-stock-in)" }} />} />
-                <StatCard title="Items Out of Stock"    value={products.length > 0 ? String(outOfStock) : "128"} change={-12.4} sparkData={SPARKS.out} sparkColor="var(--color-chart-red)" iconBg="var(--color-stock-out-soft)" icon={<MdRemoveShoppingCart size={18} style={{ color: "var(--color-stock-out)" }} />} />
-                <StatCard title="Pending Orders"        value={products.length > 0 ? String(lowStock) : "56"} change={-8.1} sparkData={SPARKS.orders} sparkColor="var(--color-chart-purple)" iconBg="var(--color-order-pending-soft)" icon={<MdShoppingCart size={18} style={{ color: "var(--color-order-pending)" }} />} />
+        {oTab==="dashboard" && (
+          dView==="add-product"
+            ? <AddProductView onCancel={()=>setDView("dashboard")} onSaved={()=>setDView("dashboard")}/>
+            : <div className="p-5 flex flex-col gap-5">
+                {products.length===0 && (
+                  <div className="rounded-2xl p-6 text-center"
+                    style={{ background:"var(--color-surface-1)", border:"1px dashed var(--color-border-soft)" }}>
+                    <p className="text-sm font-semibold" style={{ color:"var(--color-text-primary)" }}>
+                      No products yet
+                    </p>
+                    <p className="text-xs mt-1 mb-4" style={{ color:"var(--color-text-muted)" }}>
+                      Add your first product to start seeing real inventory value, stock, and order stats here.
+                    </p>
+                    <button onClick={()=>setDView("add-product")} className="px-4 py-2 rounded-xl text-sm font-semibold"
+                      style={{ background:"var(--color-brand-primary)", color:"white" }}>
+                      Add Product
+                    </button>
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--color-text-faint)" }}>
+                      Product Preview Scope
+                    </p>
+                    <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      {hasWarehouseScope && assignedWarehouseId
+                        ? "Showing only the assigned warehouse"
+                        : "Switch between warehouses to preview that warehouse’s products"}
+                    </p>
+                  </div>
+                  <div className="min-w-55">
+                    <select
+                      value={previewWarehouseId}
+                      onChange={(e) => setSelectedWarehouseId(e.target.value)}
+                      disabled={hasWarehouseScope && !!assignedWarehouseId}
+                      className="rounded-xl px-3 py-2 text-xs outline-none w-full"
+                      style={S}
+                    >
+                      {warehouses.map((warehouse) => (
+                        <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+                  <StatCard title="Total Inventory Value" value={`$${totalValue.toLocaleString("en-US",{minimumFractionDigits:2})}`} change={5.2} sparkData={SPARKS.value} sparkColor="var(--color-chart-indigo)" iconBg="var(--color-nav-active-bg)" icon={<MdAttachMoney size={18} style={{color:"var(--color-brand-primary-soft)"}}/>}/>
+                  <StatCard title="Stock on Hand"        value={totalStock.toLocaleString()} change={3.7} sparkData={SPARKS.stock} sparkColor="var(--color-chart-green)" iconBg="var(--color-stock-in-soft)" icon={<MdInventory2 size={18} style={{color:"var(--color-stock-in)"}}/>}/>
+                  <StatCard title="Out of Stock"         value={String(outOfStock)} change={-12.4} sparkData={SPARKS.out} sparkColor="var(--color-chart-red)" iconBg="var(--color-stock-out-soft)" icon={<MdRemoveShoppingCart size={18} style={{color:"var(--color-stock-out)"}}/>}/>
+                  <StatCard title="Pending Orders"       value={String(lowStock)} change={-8.1} sparkData={SPARKS.orders} sparkColor="var(--color-chart-purple)" iconBg="var(--color-order-pending-soft)" icon={<MdShoppingCart size={18} style={{color:"var(--color-order-pending)"}}/>}/>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="lg:col-span-2"><InventoryTurnoverChart productsOverride={displayedProducts}/></div>
+                  <CategoryDonutChart productsOverride={displayedProducts}/>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <LowStockPanel/><RecentActivityPanel/>
+                </div>
+                <ProductsTable onEdit={id=>setEditId(id)} onAdd={()=>setDView("add-product")} productsOverride={displayedProducts}/>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <div className="lg:col-span-2"><InventoryTurnoverChart /></div>
-                <CategoryDonutChart />
-              </div>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <LowStockPanel />
-                <RecentActivityPanel />
-              </div>
-              <ProductsTable onEdit={(id) => setEditItemId(id)} onAdd={() => setDView("add-product")} />
-            </div>
-          )
         )}
 
         {/* ══ STAFF TAB ══ */}
-        {oTab === "staff" && (
-          <div className="p-5">
-            <div className="flex items-center justify-between mb-6">
-              <div>
-                <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>Staff Management</h1>
-                <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
-                  Add, assign roles, activate/deactivate your team members.
-                </p>
+{oTab === "staff" && (
+  !hasAccess ? <UpgradePrompt /> :
+  <div className="p-5">
+    <div className="flex items-center justify-between mb-5">
+      <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>Staff Management</h1>
+      <div className="flex gap-2">
+        <button onClick={() => loadStaff()} className="flex items-center gap-1 px-3 py-2 rounded-lg text-xs"
+          style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-soft)" }}>
+          <MdRefresh size={14} /> Refresh
+        </button>
+        <button onClick={() => setShowAddStaff(true)} className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold"
+          style={{ background: "var(--color-brand-primary)", color: "white" }}>
+          <MdAdd size={16} /> Add Staff
+        </button>
+      </div>
+    </div>
+    {staffError && (
+      <div className="mb-3 px-4 py-2 rounded-xl text-xs" style={{ background: "var(--color-danger-soft)", color: "var(--color-danger)" }}>
+        {staffError} <button className="underline ml-2" onClick={() => loadStaff()}>Retry</button>
+      </div>
+    )}
+    <Panel>
+      <table className="w-full text-xs">
+        <thead>
+          <tr style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
+            {["Name", "Email", "Role", "Warehouse", "Status", "Actions"].map(h => <TH key={h} h={h} />)}
+          </tr>
+        </thead>
+        <tbody>
+          {staffLoading ? <Spinner colSpan={6} />
+            : staff.length === 0
+              ? <tr><td colSpan={6} className="text-center py-10" style={{ color: "var(--color-text-faint)" }}>
+                  No staff yet.{" "}
+                  <button onClick={() => setShowAddStaff(true)} className="underline" style={{ color: "var(--color-brand-primary-soft)" }}>Add first member</button>
+                </td></tr>
+              : staff.map(u => (
+                <tr key={u.uid} style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
+                  onMouseEnter={e => (e.currentTarget.style.background = "var(--color-surface-2)")}
+                  onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                  <td className="px-4 py-3 font-medium" style={{ color: "var(--color-text-primary)" }}>{u.displayName || "—"}</td>
+                  <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>{u.email}</td>
+                  <td className="px-4 py-3">
+                    <select value={u.role} onChange={e => updateRole(u.uid, e.target.value as UserRole)}
+                      className="rounded-lg px-2 py-1 text-xs outline-none"
+                      style={{ background: "var(--color-surface-3)", color: "var(--color-text-secondary)", border: "1px solid var(--color-border-soft)" }}>
+                      {STAFF_ROLES.map(r => <option key={r} value={r}>{r.replace("_", " ")}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-4 py-3">
+                    <select value={u.assignedWarehouseId ?? ""} onChange={e => updateWarehouseAssignment(u.uid, e.target.value || undefined)}
+                      className="rounded-lg px-2 py-1 text-xs outline-none"
+                      style={{ background: "var(--color-surface-3)", color: "var(--color-text-secondary)", border: "1px solid var(--color-border-soft)" }}>
+                      <option value="">No warehouse</option>
+                      {warehouses.map((warehouse) => (
+                        <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize"
+                      style={{ background: u.status === "active" ? "var(--color-stock-in-soft)" : "var(--color-danger-soft)", color: u.status === "active" ? "var(--color-stock-in)" : "var(--color-danger)" }}>
+                      {u.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex gap-2">
+                      <button onClick={() => toggleStatus(u.uid, u.status)} className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:opacity-70"
+                        style={{ background: "var(--color-surface-3)", color: u.status === "active" ? "var(--color-warning)" : "var(--color-success)" }}
+                        title={u.status === "active" ? "Deactivate user" : "Activate user"}>
+                        {u.status === "active" ? <MdBlock size={13} /> : <MdCheckCircle size={13} />}
+                      </button>
+                      {/* 👇 UPDATED DELETE BUTTON WITH CONFIRMATION */}
+                      <button 
+                        onClick={() => {
+                          if (window.confirm(`⚠️ Remove "${u.displayName || u.email}"?\n\nThis will permanently remove this staff member from the company. They will no longer have access to this account.\n\nThis action cannot be undone.`)) {
+                            removeStaff(u.uid);
+                          }
+                        }} 
+                        className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:bg-red-500/20"
+                        style={{ background: "var(--color-danger-soft)", color: "var(--color-danger)" }}
+                        title="Remove staff member"
+                      >
+                        <MdDelete size={13} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+        </tbody>
+      </table>
+    </Panel>
+  </div>
+)}
+
+   {/* ══ WAREHOUSES TAB ══ */}
+{oTab === "warehouses" && (
+  !hasAccess ? <UpgradePrompt /> :
+  <div className="p-5">
+    <div className="flex items-center justify-between mb-5">
+      <div>
+        <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>Warehouses</h1>
+        <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+          Manage your warehouse locations and inventory
+        </p>
+      </div>
+      {isOwner && (
+        <button 
+          onClick={() => setShowAddWh(p => !p)} 
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold transition-all hover:opacity-80"
+          style={{ background: "var(--color-brand-primary)", color: "white" }}
+        >
+          <MdAdd size={16} /> {showAddWh ? "Cancel" : "Add Warehouse"}
+        </button>
+      )}
+    </div>
+
+    {/* Add Warehouse Form - Only visible to Owner */}
+    {showAddWh && isOwner && (
+      <form onSubmit={addWarehouse} className="mb-5 rounded-xl p-4"
+        style={{ background: "var(--color-surface-1)", border: "1px solid var(--color-border-soft)" }}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <input 
+            placeholder="Warehouse Name*" 
+            required
+            value={whForm.name} 
+            onChange={e => setWhForm(f => ({ ...f, name: e.target.value }))} 
+            style={S} 
+          />
+          <input 
+            placeholder="Code e.g. WH-001*" 
+            required
+            value={whForm.code} 
+            onChange={e => setWhForm(f => ({ ...f, code: e.target.value }))} 
+            style={S} 
+          />
+          <input 
+            placeholder="Address" 
+            value={whForm.address} 
+            onChange={e => setWhForm(f => ({ ...f, address: e.target.value }))} 
+            style={S} 
+          />
+          <input 
+            placeholder="City" 
+            value={whForm.city} 
+            onChange={e => setWhForm(f => ({ ...f, city: e.target.value }))} 
+            style={S} 
+          />
+          <input 
+            placeholder="Country" 
+            value={whForm.country} 
+            onChange={e => setWhForm(f => ({ ...f, country: e.target.value }))} 
+            style={S} 
+          />
+          <button 
+            type="submit" 
+            className="sm:col-span-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-80"
+            style={{ background: "var(--color-brand-primary)", color: "white" }}
+          >
+            Create Warehouse
+          </button>
+        </div>
+      </form>
+    )}
+
+    {/* Loading State */}
+    {whLoading ? (
+      <div className="flex items-center justify-center py-12">
+        <div className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin"
+          style={{ borderColor: "var(--color-brand-primary)" }} />
+      </div>
+    ) : warehouses.length === 0 ? (
+      <div className="rounded-xl p-8 text-center"
+        style={{ background: "var(--color-surface-1)", border: "1px dashed var(--color-border-soft)" }}>
+        <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+          No warehouses yet
+        </p>
+        <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
+          {isOwner ? "Create your first warehouse to start managing inventory" : "Contact your company owner to set up warehouses"}
+        </p>
+      </div>
+    ) : (
+      <div className="grid grid-cols-1 gap-4">
+        {warehouses.map(warehouse => {
+          const inventoryItems = warehouseInventory[warehouse.id] ?? [];
+          const totalItems = inventoryItems.reduce((sum, item) => sum + (item.quantity || 0), 0);
+          const uniqueProducts = inventoryItems.length;
+          const isDefault = warehouse.isDefault || warehouse.id === "main_warehouse";
+          const canDelete = isOwner && !isDefault;
+
+          return (
+            <div key={warehouse.id} className="rounded-xl overflow-hidden"
+              style={{ 
+                background: "var(--color-surface-1)", 
+                border: `1px solid ${isDefault ? "var(--color-border-brand)" : "var(--color-border-soft)"}` 
+              }}>
+              
+              {/* Warehouse Header */}
+              <div className="flex flex-wrap items-center justify-between gap-2 p-4"
+                style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+                    style={{ background: "var(--color-surface-3)" }}>
+                    <MdWarehouse size={20} style={{ color: "var(--color-brand-primary-soft)" }} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                        {warehouse.name}
+                      </p>
+                      {isDefault && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                          style={{ background: "var(--color-stock-in-soft)", color: "var(--color-stock-in)" }}>
+                          Default
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      {warehouse.code} • {[warehouse.address, warehouse.city, warehouse.country].filter(Boolean).join(", ") || "No address set"}
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div className="text-right">
+                    <p className="text-xs font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                      {totalItems}
+                    </p>
+                    <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>Total Stock</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                      {uniqueProducts}
+                    </p>
+                    <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>Products</p>
+                  </div>
+                    {canDelete && (
+                    <button 
+                      onClick={() => {
+                        if (window.confirm(`⚠️ Delete "${warehouse.name}"?\n\nThis will permanently remove this warehouse and all its inventory records.\n\nThis action cannot be undone.`)) {
+                          deleteWarehouse(warehouse.id);
+                        }
+                      }} 
+                      className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-red-500/20"
+                      style={{ color: "var(--color-danger)" }}
+                      title="Delete warehouse"
+                    >
+                      <FiTrash2 size={14} />
+                    </button>
+                  )}
+                  {!canDelete && !isDefault && (
+                    <span className="text-[10px] px-2 py-1 rounded" style={{ color: "var(--color-text-faint)" }}>
+                      View only
+                    </span>
+                  )}
+                </div>
               </div>
-              <button
-                onClick={() => setShowAddStaff(true)}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
-                style={{ background: "var(--color-brand-primary)", color: "white" }}
-              >
-                <MdAdd size={18} /> Add Staff
+
+              {/* Inventory Table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
+                      <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
+                        style={{ color: "var(--color-text-faint)", width: "50px" }}>#</th>
+                      <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
+                        style={{ color: "var(--color-text-faint)" }}>Product</th>
+                      <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
+                        style={{ color: "var(--color-text-faint)" }}>SKU</th>
+                      <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
+                        style={{ color: "var(--color-text-faint)" }}>Quantity</th>
+                      <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
+                        style={{ color: "var(--color-text-faint)" }}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inventoryItems.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-6 text-center" style={{ color: "var(--color-text-faint)" }}>
+                          <div className="flex flex-col items-center gap-1">
+                            <MdWarehouse size={24} className="opacity-30" />
+                            <p className="text-xs">No products in this warehouse</p>
+                            <p className="text-[10px]">Products will appear here when inventory is added</p>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      inventoryItems.map((item, index) => {
+                        const qty = item.quantity || 0;
+                        let statusLabel: string;
+                        let statusColor: { bg: string; text: string };
+                        
+                        if (qty === 0) {
+                          statusLabel = 'Out of Stock';
+                          statusColor = { bg: "var(--color-stock-out-soft)", text: "var(--color-stock-out)" };
+                        } else if (qty <= 10) {
+                          statusLabel = 'Low Stock';
+                          statusColor = { bg: "var(--color-stock-low-soft)", text: "var(--color-stock-low)" };
+                        } else {
+                          statusLabel = 'In Stock';
+                          statusColor = { bg: "var(--color-stock-in-soft)", text: "var(--color-stock-in)" };
+                        }
+
+                        return (
+                          <tr key={item.id} 
+                            style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
+                            onMouseEnter={e => (e.currentTarget.style.background = "var(--color-surface-2)")}
+                            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                            <td className="px-4 py-2 font-mono text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                              {String(index + 1).padStart(2, '0')}
+                            </td>
+                            <td className="px-4 py-2 font-medium" style={{ color: "var(--color-text-primary)" }}>
+                              {item.productName || 'Unknown Product'}
+                            </td>
+                            <td className="px-4 py-2 font-mono text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                              {item.productId ? `SKU-${item.productId.slice(0, 6).toUpperCase()}` : `SKU-${(item.id || "UNKNOWN").slice(0, 6).toUpperCase()}`}
+                            </td>
+                            <td className="px-4 py-2 font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                              {qty}
+                            </td>
+                            <td className="px-4 py-2">
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize"
+                                style={{ 
+                                  background: statusColor.bg, 
+                                  color: statusColor.text 
+                                }}>
+                                {statusLabel}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Warehouse Footer */}
+              <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2"
+                style={{ borderTop: "1px solid var(--color-border-subtle)" }}>
+                <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                  {inventoryItems.length} item{inventoryItems.length !== 1 ? "s" : ""} • {totalItems} units total
+                </span>
+                <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                  Created {toDate(warehouse.createdAt).toLocaleDateString()}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    )}
+  </div>
+)}
+
+        {/* ══ CATEGORIES TAB ══ */}
+        {oTab==="categories" && (
+          !hasAccess ? <UpgradePrompt/> :
+          <div className="p-5">
+            <div className="flex items-center justify-between mb-5">
+              <h1 className="text-xl font-bold" style={{color:"var(--color-text-primary)"}}>Product Categories</h1>
+              <button onClick={()=>setShowAddCat(p=>!p)} className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold"
+                style={{background:"var(--color-brand-primary)",color:"white"}}>
+                <MdAdd size={16}/>{showAddCat?"Cancel":"Add Category"}
               </button>
             </div>
-
-            <div
-              className="rounded-2xl overflow-hidden"
-              style={{ background: "var(--color-surface-1)", border: "1px solid var(--color-border-soft)" }}
-            >
-              <table className="w-full text-xs">
-                <thead>
-                  <tr style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
-                    {["Name", "Email", "Role", "Status", "Actions"].map((h) => (
-                      <th key={h} className="px-4 py-3 text-left font-semibold uppercase tracking-wide"
-                        style={{ color: "var(--color-text-faint)" }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {staffList.length === 0 ? (
-                    <tr><td colSpan={5} className="text-center py-12" style={{ color: "var(--color-text-faint)" }}>
-                      No staff yet. Add your first team member.
-                    </td></tr>
-                  ) : staffList.map((u) => (
-                    <tr
-                      key={u.uid}
-                      style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-surface-2)")}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            {showAddCat && (
+              <form onSubmit={addCategory} className="mb-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input required placeholder="Category name*" value={catForm.name}
+                  onChange={e=>setCatForm(f=>({...f,name:e.target.value}))} style={S}/>
+                <input placeholder="Description (optional)" value={catForm.description}
+                  onChange={e=>setCatForm(f=>({...f,description:e.target.value}))} style={S}/>
+                <button type="submit" className="sm:col-span-2 py-2.5 rounded-xl text-sm font-semibold"
+                  style={{background:"var(--color-brand-primary)",color:"white"}}>Save Category</button>
+              </form>
+            )}
+            {catLoading ? <p style={{color:"var(--color-text-faint)"}}>Loading…</p>
+            : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {categories.map(c=>(
+                  <div key={c.id} className="rounded-xl p-4 flex items-start justify-between"
+                    style={{background:"var(--color-surface-1)",border:"1px solid var(--color-border-soft)"}}>
+                    <div>
+                      <p className="text-sm font-semibold" style={{color:"var(--color-text-primary)"}}>{c.name}</p>
+                      {c.description && <p className="text-xs mt-0.5" style={{color:"var(--color-text-muted)"}}>{c.description}</p>}
+                    </div>
+                    <button 
+                      onClick={() => {
+                        if (window.confirm(`⚠️ Delete category "${c.name}"?\n\nThis will remove this category. Products using this category will need to be reassigned.\n\nThis action cannot be undone.`)) {
+                          deleteCategory(c.id);
+                        }
+                      }} 
+                      className="ml-3 shrink-0 transition-colors hover:opacity-70" 
+                      style={{ color: "var(--color-danger)" }}
+                      title="Delete category"
                     >
-                      <td className="px-4 py-3 font-medium" style={{ color: "var(--color-text-primary)" }}>
-                        {u.displayName}
-                      </td>
-                      <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>{u.email}</td>
-                      <td className="px-4 py-3">
-                        <select
-                          value={u.role}
-                          onChange={(e) => updateRole(u.uid, e.target.value as UserRole)}
-                          className="rounded-lg px-2 py-1 text-xs outline-none"
-                          style={{ background: "var(--color-surface-3)", color: "var(--color-text-secondary)", border: "1px solid var(--color-border-soft)" }}
-                        >
-                          {STAFF_ROLES.map((r) => <option key={r} value={r}>{r.replace("_", " ")}</option>)}
-                        </select>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span
-                          className="px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize"
-                          style={{
-                            background: u.status === "active" ? "var(--color-stock-in-soft)" : "var(--color-danger-soft)",
-                            color:      u.status === "active" ? "var(--color-stock-in)"      : "var(--color-danger)",
-                          }}
-                        >
-                          {u.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => toggleStaffStatus(u.uid, u.status)}
-                            className="w-7 h-7 flex items-center justify-center rounded-lg"
-                            style={{ background: "var(--color-surface-3)", color: u.status === "active" ? "var(--color-warning)" : "var(--color-success)" }}>
-                            {u.status === "active" ? <MdBlock size={14} /> : <MdCheckCircle size={14} />}
-                          </button>
-                          <button onClick={() => removeStaff(u.uid)}
-                            className="w-7 h-7 flex items-center justify-center rounded-lg"
-                            style={{ background: "var(--color-danger-soft)", color: "var(--color-danger)" }}>
-                            <MdDelete size={14} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                      <FiTrash2 size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>}
           </div>
         )}
 
-        {/* ══ PLAN TAB ══ */}
-        {oTab === "plan" && (
+        {/* ══ TRANSFERS TAB ══ */}
+        {oTab==="transfers" && (
+          !hasAccess ? <UpgradePrompt/> :
           <div className="p-5">
-            <div className="mb-8">
-              <h1 className="text-xl font-bold mb-1" style={{ color: "var(--color-text-primary)" }}>Subscription Plan</h1>
-              <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                Current plan: <span className="font-semibold capitalize" style={{ color: "var(--color-brand-primary-soft)" }}>
-                  {company?.plan?.replace("_", " ") ?? "Starter"}
-                </span>
-              </p>
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h1 className="text-xl font-bold" style={{color:"var(--color-text-primary)"}}>Stock Transfers</h1>
+                <p className="text-xs mt-0.5" style={{color:"var(--color-text-muted)"}}>Create transfer requests between warehouses and confirm them as received.</p>
+              </div>
+              <button onClick={()=>loadTransfers()} className="flex items-center gap-1 px-3 py-2 rounded-lg text-xs"
+                style={{background:"var(--color-surface-3)",color:"var(--color-text-muted)",border:"1px solid var(--color-border-soft)"}}>
+                <MdRefresh size={14}/> Refresh
+              </button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {PLANS.map((plan) => {
-                const active = company?.plan === plan.id;
-                return (
-                  <div
-                    key={plan.id}
-                    className="relative flex flex-col rounded-2xl p-6 transition-all"
-                    style={{
-                      background: plan.highlighted ? "linear-gradient(160deg,#1e1b4b 0%,#1a2238 100%)" : "var(--color-surface-1)",
-                      border: active ? "2px solid var(--color-brand-primary-soft)" : plan.highlighted ? "1px solid var(--color-border-brand-strong)" : "1px solid var(--color-border-soft)",
-                      boxShadow: plan.highlighted ? "var(--shadow-glow)" : "none",
+
+            {canCreateTransfer && (
+              <div className="mb-5 rounded-2xl p-4"
+                style={{background:"var(--color-surface-1)",border:"1px solid var(--color-border-soft)"}}>
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <p className="text-sm font-semibold" style={{color:"var(--color-text-primary)"}}>Request Transfer</p>
+                    <p className="text-xs mt-0.5" style={{color:"var(--color-text-muted)"}}>Create a new pending transfer from one warehouse to another.</p>
+                  </div>
+                </div>
+                {transferRequestError && (
+                  <div className="mb-3 px-3 py-2 rounded-lg text-xs" style={{background:"var(--color-danger-soft)",color:"var(--color-danger)"}}>
+                    {transferRequestError}
+                  </div>
+                )}
+                <form onSubmit={requestTransfer} className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                  <select value={transferForm.fromWarehouseId} disabled={!!hasWarehouseScope && !!assignedWarehouseId} onChange={e=>{
+                    setTransferForm((p)=>({ ...p, fromWarehouseId: e.target.value, productId: "", quantity: 1 }));
+                  }} className="rounded-xl px-3 py-2 text-xs outline-none" style={S}>
+                    <option value="">From warehouse</option>
+                    {(hasWarehouseScope && assignedWarehouseId
+                      ? warehouses.filter((warehouse) => warehouse.id === assignedWarehouseId)
+                      : warehouses).map((warehouse) => (
+                      <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
+                    ))}
+                  </select>
+                  <select value={transferForm.toWarehouseId} onChange={e=>setTransferForm((p)=>({ ...p, toWarehouseId: e.target.value }))} className="rounded-xl px-3 py-2 text-xs outline-none" style={S}>
+                    <option value="">To warehouse</option>
+                    {warehouses.filter((warehouse) => warehouse.id !== transferForm.fromWarehouseId).map((warehouse) => (
+                      <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
+                    ))}
+                  </select>
+                  <select value={transferForm.productId} onChange={e=>setTransferForm((p)=>({ ...p, productId: e.target.value, quantity: 1 }))} className="rounded-xl px-3 py-2 text-xs outline-none" style={S}>
+                    <option value="">Choose product</option>
+                    {transferInventoryItems.map((item) => (
+                      <option key={item.id} value={item.productId}>{item.productName}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    min={1}
+                    max={availableTransferQty}
+                    value={transferForm.quantity === 0 ? "" : transferForm.quantity}
+                    onChange={e => {
+                      const raw = e.target.value;
+                      if (raw === "") {
+                        setTransferForm(p => ({ ...p, quantity: 0 }));
+                        return;
+                      }
+                      const parsed = Number(raw);
+                      if (Number.isNaN(parsed)) return;
+                      setTransferForm(p => ({ ...p, quantity: Math.min(Math.max(1, parsed), availableTransferQty || 1) }));
                     }}
-                  >
-                    {plan.badge && (
-                      <div className="absolute -top-3.5 left-1/2 -translate-x-1/2">
-                        <span className="px-4 py-1 rounded-full text-xs font-bold" style={{ background: "var(--color-brand-primary)", color: "white" }}>
-                          {plan.badge}
-                        </span>
-                      </div>
-                    )}
-                    {active && (
-                      <div className="absolute -top-3.5 right-4">
-                        <span className="px-3 py-1 rounded-full text-xs font-bold" style={{ background: "var(--color-stock-in-soft)", color: "var(--color-stock-in)" }}>
-                          Current Plan
-                        </span>
-                      </div>
-                    )}
-                    <p className="text-sm font-semibold mb-1" style={{ color: plan.highlighted ? "var(--color-brand-primary-soft)" : "var(--color-text-muted)" }}>{plan.name}</p>
-                    <div className="mb-6">
-                      <span className="text-4xl font-extrabold" style={{ color: "var(--color-text-primary)" }}>${plan.price}</span>
-                      <span className="text-sm ml-1" style={{ color: "var(--color-text-muted)" }}>/{plan.period}</span>
-                    </div>
-                    <div className="h-px mb-5" style={{ background: "var(--color-border-soft)" }} />
-                    <ul className="flex-1 space-y-2.5 mb-6">
-                      {plan.features.map((f) => (
-                        <li key={f.label} className="flex items-center gap-2.5 text-xs">
-                          <FaCheck className="shrink-0 text-[10px]" style={{ color: f.included ? "var(--color-success)" : "var(--color-text-faint)" }} />
-                          <span style={{ color: f.included ? "var(--color-text-secondary)" : "var(--color-text-faint)" }}>{f.label}</span>
+                    onBlur={() => {
+                      setTransferForm(p => ({ ...p, quantity: p.quantity < 1 ? 1 : p.quantity }));
+                    }}
+                    className="rounded-xl px-3 py-2 text-xs outline-none" style={S} placeholder="Qty"
+                  />
+                  <input value={transferForm.notes} onChange={e=>setTransferForm((p)=>({ ...p, notes: e.target.value }))} className="rounded-xl px-3 py-2 text-xs outline-none" style={S} placeholder="Notes (optional)" />
+                  <div className="md:col-span-5 text-[11px]" style={{ color: "var(--color-text-faint)" }}>
+                    {selectedInventoryItem ? `Available in source warehouse: ${selectedInventoryItem.quantity}` : "Select a source warehouse and product to see available stock."}
+                  </div>
+                  <button type="submit" disabled={!canRequestTransfer || transferRequestLoading} className="md:col-span-5 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-50" style={{background:"var(--color-brand-primary)",color:"white"}}>
+                    {transferRequestLoading ? "Creating Request…" : "Create Transfer Request"}
+                  </button>
+                </form>
+              </div>
+            )}
+
+            <Panel>
+              <table className="w-full text-xs">
+                <thead><tr style={{borderBottom:"1px solid var(--color-border-subtle)"}}>
+                  {["#","From","To","Items","Status","Actions"].map(h=><TH key={h} h={h}/>)}
+                </tr></thead>
+                <tbody>
+                  {trfLoading ? <Spinner colSpan={9}/>
+                  : movements.length===0
+                    ? <tr><td colSpan={6} className="text-center py-10" style={{color:"var(--color-text-faint)"}}>No transfers yet.</td></tr>
+                    : transfers.map(t=>{
+                      const SC: Record<string,string> = {
+                        draft: "var(--color-text-faint)",
+                        pending: "var(--color-info)",
+                        in_transit: "var(--color-info)",
+                        completed: "var(--color-success)",
+                        cancelled: "var(--color-danger)",
+                      };
+                      const SB: Record<string,string> = {
+                        draft: "var(--color-surface-3)",
+                        pending: "var(--color-info-soft)",
+                        in_transit: "var(--color-info-soft)",
+                        completed: "var(--color-stock-in-soft)",
+                        cancelled: "var(--color-danger-soft)",
+                      };
+                      const canConfirm = isOwner
+                        ? t.status === "pending" || t.status === "in_transit"
+                        : hasWarehouseScope && assignedWarehouseId
+                          ? t.toWarehouseId === assignedWarehouseId && (t.status === "pending" || t.status === "in_transit")
+                          : false;
+                      const canCancel = isOwner && (t.status === "draft" || t.status === "pending" || t.status === "in_transit");
+                      return (
+                        <tr key={t.id} style={{borderBottom:"1px solid var(--color-border-subtle)"}}
+                          onMouseEnter={e=>(e.currentTarget.style.background="var(--color-surface-2)")}
+                          onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
+                          <td className="px-4 py-3 font-mono text-[10px]" style={{color:"var(--color-text-muted)"}}>{t.transferNumber}</td>
+                          <td className="px-4 py-3" style={{color:"var(--color-text-secondary)"}}>{t.fromWarehouseName}</td>
+                          <td className="px-4 py-3" style={{color:"var(--color-text-secondary)"}}>{t.toWarehouseName}</td>
+                          <td className="px-4 py-3" style={{color:"var(--color-text-secondary)"}}>
+                        <div className="space-y-1">
+                          {(t.items ?? []).map((item) => (
+                            <div key={item.id ?? `${t.id}-${item.productId}`} className="flex items-center justify-between gap-2">
+                              <span>{item.productName}</span>
+                              <span className="font-semibold" style={{ color: "var(--color-brand-primary-soft)" }}>{item.quantity}</span>
+                            </div>
+                          ))}
+                        </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize"
+                              style={{background:SB[t.status]??"var(--color-surface-3)",color:SC[t.status]??"var(--color-text-muted)"}}>
+                              {t.status.replace("_"," ")}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3"><div className="flex gap-1 flex-wrap">
+                            {canConfirm && <button onClick={()=>updateTransfer(t.id,"completed")} className="px-2 py-1 rounded text-[10px] font-semibold" style={{background:"var(--color-stock-in-soft)",color:"var(--color-stock-in)"}}>Confirm Receipt</button>}
+                            {canCancel && <button onClick={()=>updateTransfer(t.id,"cancelled")} className="px-2 py-1 rounded text-[10px] font-semibold" style={{background:"var(--color-danger-soft)",color:"var(--color-danger)"}}>Cancel</button>}
+                          </div></td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </Panel>
+          </div>
+        )}
+
+        {/* ══ STOCK LOG TAB ══ */}
+        {oTab==="movements" && (
+          !hasAccess ? <UpgradePrompt/> :
+          <div className="p-5">
+            <h1 className="text-xl font-bold mb-5" style={{color:"var(--color-text-primary)"}}>Stock Movement Log</h1>
+            <Panel>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr style={{borderBottom:"1px solid var(--color-border-subtle)"}}>
+                    {["Date","Product","SKU","Warehouse","Type","Qty","Before","After","Ref"].map(h=><TH key={h} h={h}/>)}
+                  </tr></thead>
+                  <tbody>
+                    {trfLoading ? <Spinner/>
+                    : movements.length===0
+                      ? <tr><td colSpan={9} className="text-center py-10" style={{color:"var(--color-text-faint)"}}>No movements recorded yet.</td></tr>
+                      : movements.map(m=>{
+                        const pos = m.quantity>0;
+                        const d = m.createdAt instanceof Date
+                          ? m.createdAt
+                          : typeof m.createdAt === "object" && m.createdAt !== null && "toDate" in m.createdAt
+                            ? (m.createdAt as FirebaseTimestamp).toDate()
+                            : new Date();
+                        return (
+                          <tr key={m.id} style={{borderBottom:"1px solid var(--color-border-subtle)"}}
+                            onMouseEnter={e=>(e.currentTarget.style.background="var(--color-surface-2)")}
+                            onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
+                            <td className="px-3 py-2" style={{color:"var(--color-text-faint)"}}>{d.toLocaleDateString()}</td>
+                            <td className="px-3 py-2 font-medium" style={{color:"var(--color-text-primary)"}}>{m.productName}</td>
+                            <td className="px-3 py-2 font-mono text-[10px]" style={{color:"var(--color-text-muted)"}}>{m.sku}</td>
+                            <td className="px-3 py-2" style={{color:"var(--color-text-muted)"}}>{m.warehouseId}</td>
+                            <td className="px-3 py-2 capitalize" style={{color:"var(--color-text-secondary)"}}>{m.type.replace("_"," ")}</td>
+                            <td className="px-3 py-2 font-semibold" style={{color:pos?"var(--color-success)":"var(--color-danger)"}}>{pos?"+":""}{m.quantity}</td>
+                            <td className="px-3 py-2" style={{color:"var(--color-text-faint)"}}>{m.balanceBefore}</td>
+                            <td className="px-3 py-2" style={{color:"var(--color-text-faint)"}}>{m.balanceAfter}</td>
+                            <td className="px-3 py-2 font-mono text-[10px]" style={{color:"var(--color-text-faint)"}}>{m.reference||"—"}</td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
+          </div>
+        )}
+
+        {/* ══ SUBSCRIPTION TAB ══ */}
+        {oTab==="plan" && (
+          <div className="p-5">
+            {/* Trial status banner inside plan tab */}
+            {isTrial && !isGuest && (
+              <div className="mb-6 px-5 py-4 rounded-xl flex items-center justify-between"
+                style={{background:"var(--color-info-soft)",border:"1px solid var(--color-info-border)"}}>
+                <div>
+                  <p className="text-sm font-semibold" style={{color:"var(--color-info)"}}>
+                    You are on a free trial
+                  </p>
+                  <p className="text-xs mt-0.5" style={{color:"var(--color-text-secondary)"}}>
+                    {daysLeft!=null&&daysLeft>0
+                      ? `${daysLeft} day${daysLeft!==1?"s":""} remaining — subscribe to keep full access after trial ends.`
+                      : "Your trial has expired. Select a plan below to continue."}
+                  </p>
+                </div>
+                <span className="text-2xl font-extrabold ml-4" style={{color:"var(--color-info)"}}>{daysLeft??0}d</span>
+              </div>
+            )}
+            {isGuest && (
+              <div className="mb-6 px-5 py-4 rounded-xl"
+                style={{background:"var(--color-stock-in-soft)",border:"1px solid var(--color-stock-in-border)"}}>
+                <p className="text-sm font-semibold" style={{color:"var(--color-stock-in)"}}>You are on a Guest Demo account</p>
+                <p className="text-xs mt-0.5" style={{color:"var(--color-text-secondary)"}}>Guest accounts have permanent full access. Register a company account to manage a real business.</p>
+              </div>
+            )}
+            <h1 className="text-xl font-bold mb-1" style={{color:"var(--color-text-primary)"}}>Choose a Plan</h1>
+            <p className="text-xs mb-6" style={{color:"var(--color-text-muted)"}}>
+              Current plan:{" "}
+              <span className="font-semibold capitalize" style={{color:"var(--color-brand-primary-soft)"}}>
+                {company?.plan?.replace("_"," ")??"Starter"}
+              </span>
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {PLANS.map(plan=>{
+                const active = company?.plan===plan.id;
+                return (
+                  <div key={plan.id} className="relative flex flex-col rounded-2xl p-6"
+                    style={{background:plan.highlighted?"linear-gradient(160deg,#1e1b4b,#1a2238)":"var(--color-surface-1)",border:active?"2px solid var(--color-brand-primary-soft)":plan.highlighted?"1px solid var(--color-border-brand-strong)":"1px solid var(--color-border-soft)",boxShadow:plan.highlighted?"var(--shadow-glow)":"none"}}>
+                    {plan.badge && <div className="absolute -top-3.5 left-1/2 -translate-x-1/2"><span className="px-4 py-1 rounded-full text-xs font-bold" style={{background:"var(--color-brand-primary)",color:"white"}}>{plan.badge}</span></div>}
+                    {active && <div className="absolute -top-3.5 right-4"><span className="px-3 py-1 rounded-full text-xs font-bold" style={{background:"var(--color-stock-in-soft)",color:"var(--color-stock-in)"}}>Current</span></div>}
+                    <p className="text-sm font-semibold mb-1" style={{color:plan.highlighted?"var(--color-brand-primary-soft)":"var(--color-text-muted)"}}>{plan.name}</p>
+                    <div className="mb-5"><span className="text-4xl font-extrabold" style={{color:"var(--color-text-primary)"}}>${plan.price}</span><span className="text-sm ml-1" style={{color:"var(--color-text-muted)"}}>/{plan.period}</span></div>
+                    <div className="h-px mb-4" style={{background:"var(--color-border-soft)"}}/>
+                    <ul className="flex-1 space-y-2.5 mb-5">
+                      {plan.features.map(f=>(
+                        <li key={f.label} className="flex items-center gap-2 text-xs">
+                          <FaCheck className="shrink-0 text-[10px]" style={{color:f.included?"var(--color-success)":"var(--color-text-faint)"}}/>
+                          <span style={{color:f.included?"var(--color-text-secondary)":"var(--color-text-faint)"}}>{f.label}</span>
                         </li>
                       ))}
                     </ul>
-                    <button
-                      onClick={() => updatePlan(plan.id)}
-                      disabled={active}
-                      className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-50"
-                      style={
-                        active
-                          ? { background: "var(--color-stock-in-soft)", color: "var(--color-stock-in)" }
-                          : plan.highlighted
-                          ? { background: "var(--color-brand-primary)", color: "white" }
-                          : { background: "transparent", color: "var(--color-text-primary)", border: "1px solid var(--color-border-medium)" }
-                      }
-                    >
-                      {active ? "✓ Active Plan" : `Switch to ${plan.name}`}
+                    <button onClick={()=>updatePlan(plan.id)} disabled={active}
+                      className="w-full py-2.5 rounded-xl text-sm font-semibold disabled:opacity-50"
+                      style={active?{background:"var(--color-stock-in-soft)",color:"var(--color-stock-in)"}:plan.highlighted?{background:"var(--color-brand-primary)",color:"white"}:{background:"transparent",color:"var(--color-text-primary)",border:"1px solid var(--color-border-medium)"}}>
+                      {active?"✓ Active Plan":`Subscribe to ${plan.name}`}
                     </button>
                   </div>
                 );
@@ -430,36 +1440,33 @@ const OwnerDashboardPage = () => {
       </main>
 
       {/* FAB */}
-      {oTab === "dashboard" && dView === "dashboard" && (
-        <button
-          onClick={() => setDView("add-product")}
-          className="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-4 py-3 rounded-full text-sm font-semibold"
-          style={{ background: "var(--color-brand-primary)", color: "white", boxShadow: "var(--shadow-glow)" }}
-        >
-          <MdAddIcon size={20} /> Add Product
+      {oTab==="dashboard"&&dView==="dashboard"&&(
+        <button onClick={()=>setDView("add-product")} className="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-4 py-3 rounded-full text-sm font-semibold"
+          style={{background:"var(--color-brand-primary)",color:"white",boxShadow:"var(--shadow-glow)"}}>
+          <MdAdd size={20}/> Add Product
         </button>
       )}
 
-      {showAddStaff && (
-        <AddStaffModal companyId={companyId} onClose={() => setShowAddStaff(false)} onAdded={loadStaff} />
-      )}
+      {showAddStaff && <AddStaffModal companyId={companyId} onClose={()=>setShowAddStaff(false)} onAdded={()=>loadStaff()} warehouses={warehouses}/>}
 
       {editItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <StockStateEditor
             id={editItem.id}
-            qty={editItem.stockQuantity ?? editItem.product_Qty ?? 0}
-            price={editItem.price ?? editItem.product_Price ?? 0}
-            des={editItem.product_description}
-            siz={editItem.size ?? "Piece"}
-            stockState={0} index={0}
-            onClose={() => setEditItemId(null)}
-            onDelete={async (e, id) => {
-              const { deleteDoc: dd, doc: d } = await import("firebase/firestore");
-              const { default: db2 } = await import("../services/firebase");
-              await dd(d(db2, "companies", companyId, "products", id));
-              setEditItemId(null);
-            }}
+            qty={editItem.stockQuantity ?? 0}
+            price={editItem.price ?? 0}
+            stockState={0}
+            index={0}
+            companyId={companyId}
+            canEditPrice={isOwner}
+            canDelete={canDeleteProduct}
+            onClose={() => setEditId(null)}
+            onDelete={canDeleteProduct ? async (_e, id) => {
+              const { deleteDoc, doc } = await import("firebase/firestore");
+              const { default: db } = await import("../services/firebase");
+              await deleteDoc(doc(db, "companies", companyId, "products", id));
+              setEditId(null);
+            } : undefined}
           />
         </div>
       )}

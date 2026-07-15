@@ -4,12 +4,12 @@ import { useSelector } from "react-redux";
 import { yupResolver } from "@hookform/resolvers/yup";
 import * as yup from "yup";
 import { addDoc, collection, doc, updateDoc } from "firebase/firestore";
-import { getDownloadURL, ref, uploadString } from "firebase/storage";
 import { Link, useNavigate } from "react-router-dom";
 import { FaArrowLeft, FaCloudUploadAlt } from "react-icons/fa";
-import db, { storage, useAuth } from "../services/firebase";
+import db, { useAuth } from "../services/firebase";
 import { RootState } from "../app/store";
-import DefaultLogo from "../assets/img/default-logo.png";
+import DefaultLogo from "../assets/img/stocktrack-logo.png";
+import { uploadImageToCloudinary } from "../services/cloudinary.service";
 
 const schema = yup.object({
   businessName: yup.string().required("Business name is required"),
@@ -66,7 +66,6 @@ const BusinessProfilePage = () => {
   };
 
   const onSubmit = async (data: ProfileFormData) => {
-    navigate("/dashboard");
     const docRef = await addDoc(collection(db, "businesses"), {
       user_id: currentUser?.uid,
       businessName: data.businessName,
@@ -75,12 +74,17 @@ const BusinessProfilePage = () => {
       about: data.about,
       mission: data.mission,
     });
+
     if (logo !== DefaultLogo) {
-      const imgRef = ref(storage, `businesses/${docRef.id}/image`);
-      await uploadString(imgRef, logo, "data_url");
-      const url = await getDownloadURL(imgRef);
+      const file = new File([await fetch(logo).then((r) => r.blob())], "business-logo.png", {
+        type: "image/png",
+      });
+
+      const url = await uploadImageToCloudinary(file, "businesses");
       await updateDoc(doc(db, "businesses", docRef.id), { logo: url });
     }
+
+    navigate("/dashboard");
   };
 
   return (

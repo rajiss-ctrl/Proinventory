@@ -36,8 +36,8 @@ const BusinessEditForm = ({ onClose, open }: BusinessEditFormProps) => {
       {businessData.map((item) => (
         <div key={item.id} className="flex flex-col items-center gap-3">
           <img
-            src={item.logo}
-            alt={item.businessName}
+            src={item.logo ?? ""}
+            alt={item.businessName ?? item.name ?? "Business profile"}
             className="w-8 h-8 rounded-full object-cover"
           />
           <h2 className="text-base font-semibold">Update Business Profile</h2>
@@ -45,7 +45,7 @@ const BusinessEditForm = ({ onClose, open }: BusinessEditFormProps) => {
           <input
             type="text"
             className="w-full border border-gray-300 rounded-md h-10 text-gray-600 text-sm px-4"
-            placeholder={`Edit "${item.businessName}"`}
+            placeholder={`Edit "${item.businessName ?? item.name ?? "Business"}"`}
             value={name}
             onChange={(e) => setName(e.target.value)}
           />

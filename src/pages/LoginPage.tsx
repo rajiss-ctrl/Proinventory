@@ -1,19 +1,19 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { useDispatch } from "react-redux";
 import {
   signInWithEmailAndPassword,
   GoogleAuthProvider,
   signInWithPopup,
 } from "firebase/auth";
-import { useForm } from "react-hook-form";
+import { useForm, type Resolver } from "react-hook-form";
 import * as yup from "yup";
 import { yupResolver } from "@hookform/resolvers/yup";
 import { MdEmail, MdLock, MdVisibility, MdVisibilityOff } from "react-icons/md";
 import { FcGoogle } from "react-icons/fc";
 import { auth } from "../services/firebase";
-import { setCurrentUser, fetchUserProfile } from "../features/auth/authSlice";
+import { setCurrentUser, clearCurrentUser, fetchUserProfile } from "../features/auth/authSlice";
 import AuthLeftPanel from "../components/layout/AuthLeftPanel";
+import useAppDispatch from "../hooks/useAppDispatch";
 
 /* ─── Types ─────────────────────────────────────────────── */
 interface LoginForm {
@@ -21,10 +21,12 @@ interface LoginForm {
   password: string;
 }
 
-const schema = yup.object({
-  email:    yup.string().email("Invalid email").required("Email is required"),
+const schema: yup.ObjectSchema<LoginForm> = yup.object({
+  email: yup.string().email("Invalid email").required("Email is required"),
   password: yup.string().min(6, "Min 6 characters").required("Password is required"),
 });
+
+const loginResolver: Resolver<LoginForm> = yupResolver(schema) as Resolver<LoginForm>;
 
 /* ─── Constants ─────────────────────────────────────────── */
 const GUEST = { email: import.meta.env.VITE_GUEST_EMAIL as string, pass: import.meta.env.VITE_GUEST_PASSWORD as string };
@@ -77,7 +79,7 @@ const SocialBtn = ({
 /* ─── Page ───────────────────────────────────────────────── */
 const LoginPage = () => {
   const navigate  = useNavigate();
-  const dispatch  = useDispatch();
+  const dispatch  = useAppDispatch();
   const [showPass,   setShowPass]   = useState(false);
   const [remember,   setRemember]   = useState(false);
   const [loading,    setLoading]    = useState(false);
@@ -87,27 +89,44 @@ const LoginPage = () => {
     register,
     handleSubmit,
     formState: { errors },
-  } = useForm<LoginForm>({ resolver: yupResolver(schema) });
+  } = useForm<LoginForm>({
+    resolver: loginResolver,
+  });
 
   /* ── Core login helper ── */
   const login = async (email: string, password: string) => {
+    // Clear any stale session data before signing in
+    dispatch(clearCurrentUser());
+    sessionStorage.removeItem("currentUser");
+    localStorage.removeItem("currentUser");
+
     const { user } = await signInWithEmailAndPassword(auth, email, password);
     const payload  = { uid: user.uid, email: user.email ?? "" };
     dispatch(setCurrentUser(payload));
     if (remember) localStorage.setItem("currentUser", JSON.stringify(payload));
     else          sessionStorage.setItem("currentUser", JSON.stringify(payload));
-    // Fetch users/{uid} to get companyId → triggers App.tsx company listeners
-    dispatch(fetchUserProfile(user.uid));
+
     console.log("✅ [Login] Signed in, fetching user profile for uid:", user.uid);
-    navigate("/dashboard");
+    const profile = await dispatch(fetchUserProfile(user.uid)).unwrap();
+    const target = profile.role === "super_admin"
+      ? "/superadmin"
+      : (profile.role === "company_owner" || profile.role === "company_admin" || profile.role === "guest")
+        ? "/owner"
+        : "/dashboard";
+
+    navigate(target);
   };
 
   /* ── Email / password submit ── */
   const onSubmit = async (data: LoginForm) => {
     setLoading(true); setServerErr("");
-    try   { await login(data.email, data.password); }
-    catch { setServerErr("Incorrect email or password. Please try again."); }
-    finally { setLoading(false); }
+    try {
+      await login(data.email ?? "", data.password ?? "");
+    } catch {
+      setServerErr("Incorrect email or password. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   /* ── Guest login ── */
@@ -115,26 +134,15 @@ const LoginPage = () => {
     setLoading(true);
     setServerErr("");
     try {
-      const { user } = await signInWithEmailAndPassword(auth, GUEST.email, GUEST.pass);
-
-      // Set role: "guest" BEFORE navigating — RoleRoute reads this immediately
-      const payload = {
-        uid:         user.uid,
-        email:       user.email ?? "",
-        role:        "guest" as const,
-        companyId:   `guest_company_${user.uid}`,
-        displayName: "Guest User",
-        isSuperAdmin: false,
-      };
-      dispatch(setCurrentUser(payload));
-      sessionStorage.setItem("currentUser", JSON.stringify(payload));
-
-      // Do NOT call fetchUserProfile for guest — it has no users/{uid} doc
-      // and would overwrite the guest role we just set.
-      console.log("✅ [Guest] Signed in as guest, role: guest → /owner");
-      navigate("/owner");
-    } catch (err) {
-      console.error("❌ [Guest] Login failed:", err);
+      // Sign in exactly like a normal user — the seed script has already
+      // written users/{uid} with role:"company_owner" and a real companyId,
+      // so fetchUserProfile will load full owner privileges automatically.
+      await login(
+        import.meta.env.VITE_GUEST_EMAIL as string,
+        import.meta.env.VITE_GUEST_PASSWORD as string,
+      );
+      console.log("✅ [Guest] Signed in — profile will load from users/{uid}");
+    } catch {
       setServerErr("Guest login failed. Please check your connection and try again.");
     } finally {
       setLoading(false);
@@ -149,7 +157,15 @@ const LoginPage = () => {
       const payload  = { uid: user.uid, email: user.email ?? "" };
       dispatch(setCurrentUser(payload));
       sessionStorage.setItem("currentUser", JSON.stringify(payload));
-      navigate("/dashboard");
+
+      const profile = await dispatch(fetchUserProfile(user.uid)).unwrap();
+      const target = profile.role === "super_admin"
+        ? "/superadmin"
+        : (profile.role === "company_owner" || profile.role === "company_admin" || profile.role === "guest")
+          ? "/owner"
+          : "/dashboard";
+
+      navigate(target);
     } catch {
       setServerErr("Google sign-in failed. Please try again.");
     } finally {
@@ -163,7 +179,7 @@ const LoginPage = () => {
       style={{ background: "var(--color-bg-app)" }}
     >
       <div
-        className="w-full max-w-5xl rounded-2xl overflow-hidden grid lg:grid-cols-2 min-h-[600px]"
+        className="w-full max-w-5xl rounded-2xl overflow-hidden grid lg:grid-cols-2 min-h-150"
         style={{
           background: "var(--color-surface-1)",
           border: "1px solid var(--color-border-soft)",

@@ -1,20 +1,21 @@
-import { useState, useEffect, useRef } from "react";
-import { addDoc, collection } from "firebase/firestore";
-import { getDownloadURL, ref as storageRef, uploadBytesResumable } from "firebase/storage";
+import { useState, useRef, useEffect } from "react";
+import { useSelector } from "react-redux";
 import imageCompression from "browser-image-compression";
 import { MdImage, MdSave, MdCloudUpload } from "react-icons/md";
 import { FiChevronRight, FiTag, FiPackage, FiShield, FiDollarSign } from "react-icons/fi";
-import db, { storage, useAuth } from "../../services/firebase";
+import { useAuth } from "../../services/firebase";
+import { RootState } from "../../app/store";
+import { ProductService } from "../../services/product.service";
+import { CategoryService } from "../../services/category.service";
+import { WarehouseService } from "../../services/warehouse.service";
+import { uploadImageToCloudinary } from "../../services/cloudinary.service";
+import useRole from "../../hooks/useRole";
+import { Category, Warehouse } from "../../types";
 
 interface AddProductViewProps {
   onCancel: () => void;
   onSaved: () => void;
 }
-
-const CATEGORIES = [
-  "Electronics", "Apparel", "Groceries", "Home & Kitchen",
-  "Sports & Outdoors", "Toys & Games", "Books", "Beauty & Health", "Other",
-];
 
 const CURRENCIES = ["USD", "EUR", "GBP", "NGN", "CAD", "AUD"];
 
@@ -34,10 +35,17 @@ const INPUT_STYLE = {
 
 const AddProductView = ({ onCancel, onSaved }: AddProductViewProps) => {
   const currentUser = useAuth();
+  const { assignedWarehouseId, hasWarehouseScope } = useRole();
+  const companyId = useSelector((s: RootState) => s.auth.user?.companyId ?? "");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(false);
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [warehousesLoading, setWarehousesLoading] = useState(false);
   const [productName, setProductName] = useState("");
   const [category, setCategory]       = useState("");
+  const [warehouseId, setWarehouseId] = useState("");
   const [currency, setCurrency]       = useState("USD");
   const [price, setPrice]             = useState("");
   const [qty, setQty]                 = useState("");
@@ -50,23 +58,61 @@ const AddProductView = ({ onCancel, onSaved }: AddProductViewProps) => {
   const [error, setError]             = useState("");
   const [saving, setSaving]           = useState(false);
 
-  /* ── Upload whenever a file is picked ── */
+  const scopedWarehouses = hasWarehouseScope && assignedWarehouseId
+    ? warehouses.filter((warehouse) => warehouse.id === assignedWarehouseId)
+    : warehouses;
+
   useEffect(() => {
-    if (!imgFile) return;
-    const task = uploadBytesResumable(
-      storageRef(storage, `products/${Date.now()}_${imgFile.name}`),
-      imgFile
-    );
-    task.on(
-      "state_changed",
-      (snap) => setUploadProgress((snap.bytesTransferred / snap.totalBytes) * 100),
-      (err) => { setError(err.message); setUploadProgress(null); },
-      () => getDownloadURL(task.snapshot.ref).then((url) => {
-        setImgUrl(url);
-        setUploadProgress(null);
-      })
-    );
-  }, [imgFile]);
+    if (!companyId) return;
+
+    let cancelled = false;
+    const loadCategories = async () => {
+      setCategoriesLoading(true);
+      try {
+        const list = await CategoryService.list(companyId);
+        if (cancelled) return;
+        setCategories(list.sort((a, b) => a.name.localeCompare(b.name)));
+      } catch (err) {
+        if (!cancelled) {
+          setError((err as Error).message || "Failed to load categories.");
+        }
+      } finally {
+        if (!cancelled) {
+          setCategoriesLoading(false);
+        }
+      }
+    };
+
+    const loadWarehouses = async () => {
+      setWarehousesLoading(true);
+      try {
+        const list = await WarehouseService.list(companyId);
+        if (cancelled) return;
+        const sorted = list.sort((a, b) => a.name.localeCompare(b.name));
+        setWarehouses(sorted);
+
+        const defaultWarehouseId = hasWarehouseScope && assignedWarehouseId
+          ? assignedWarehouseId
+          : sorted[0]?.id || "";
+
+        setWarehouseId((current) => current || defaultWarehouseId);
+      } catch (err) {
+        if (!cancelled) {
+          setError((err as Error).message || "Failed to load warehouses.");
+        }
+      } finally {
+        if (!cancelled) {
+          setWarehousesLoading(false);
+        }
+      }
+    };
+
+    void loadCategories();
+    void loadWarehouses();
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, assignedWarehouseId, hasWarehouseScope]);
 
   /* ── File picker handler ── */
   const handleFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -82,8 +128,19 @@ const AddProductView = ({ onCancel, onSaved }: AddProductViewProps) => {
     const compressed = f.size > 1_048_576
       ? await imageCompression(f, { maxSizeMB: 1, maxWidthOrHeight: 1200 })
       : f;
+
     setImgFile(compressed);
     setImgPreview(URL.createObjectURL(compressed));
+    setUploadProgress(0);
+
+    try {
+      const url = await uploadImageToCloudinary(compressed, "products");
+      setImgUrl(url);
+      setUploadProgress(100);
+    } catch (err) {
+      setError((err as Error).message);
+      setUploadProgress(null);
+    }
   };
 
   /* ── Drag & drop ── */
@@ -100,17 +157,37 @@ const AddProductView = ({ onCancel, onSaved }: AddProductViewProps) => {
     if (!price)              { setError("Price is required."); return; }
     if (!qty)                { setError("Quantity is required."); return; }
     if (!size)               { setError("Packaging size is required."); return; }
+    if (!companyId)          { setError("Company context is not available yet."); return; }
+    if (!warehouseId)        { setError("Please select a warehouse for this product."); return; }
+
+    const selectedCategory = categories.find((item) => item.id === category);
+    const selectedWarehouse = warehouses.find((item) => item.id === warehouseId);
+
+    if (!selectedCategory) {
+      setError("Selected category is no longer available. Please choose another category.");
+      return;
+    }
+
+    if (!selectedWarehouse) {
+      setError("Selected warehouse is no longer available. Please choose another warehouse.");
+      return;
+    }
+
     setSaving(true);
     try {
-      await addDoc(collection(db, "stock"), {
-        user_id:             currentUser?.uid,
-        product_name:        productName.trim(),
-        product_Qty:         Number(qty),
-        product_Price:       Number(price),
+      await ProductService.create({
+        companyId,
+        createdBy: currentUser?.uid ?? "",
+        name: productName.trim(),
+        sku: `SKU-${Date.now().toString(36).toUpperCase()}`,
+        categoryId: selectedCategory.id,
+        categoryName: selectedCategory.name,
+        price: Number(price),
+        stockQuantity: Number(qty),
+        imageUrl: imgUrl ?? "",
         size,
-        product_description: description || category,
-        img:                 imgUrl ?? "",
-        timestamp:           new Date(),
+        warehouseId: selectedWarehouse.id,
+        warehouseName: selectedWarehouse.name,
       });
       onSaved();
     } catch (err) {
@@ -278,9 +355,41 @@ const AddProductView = ({ onCancel, onSaved }: AddProductViewProps) => {
                     style={{ ...INPUT_STYLE, paddingRight: "2.5rem" }}
                     onFocus={(e) => ((e.currentTarget as HTMLElement).style.borderColor = "var(--color-input-border-focus)")}
                     onBlur={(e) => ((e.currentTarget as HTMLElement).style.borderColor = "var(--color-input-border)")}
+                    disabled={categoriesLoading || categories.length === 0}
                   >
-                    <option value="" disabled>Select category</option>
-                    {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    <option value="" disabled>
+                      {categoriesLoading ? "Loading categories..." : categories.length === 0 ? "Create a category first" : "Select category"}
+                    </option>
+                    {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--color-input-icon)" }}>▾</span>
+                </div>
+              </div>
+
+              {/* Warehouse */}
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--color-text-secondary)" }}>
+                  Warehouse
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2">
+                    <MdImage size={14} style={{ color: "var(--color-input-icon)" }} />
+                  </span>
+                  <select
+                    value={warehouseId}
+                    onChange={(e) => setWarehouseId(e.target.value)}
+                    className={`${inputCls} pl-9 appearance-none`}
+                    style={{ ...INPUT_STYLE, paddingRight: "2.5rem" }}
+                    onFocus={(e) => ((e.currentTarget as HTMLElement).style.borderColor = "var(--color-input-border-focus)")}
+                    onBlur={(e) => ((e.currentTarget as HTMLElement).style.borderColor = "var(--color-input-border)")}
+                    disabled={warehousesLoading || warehouses.length === 0 || (hasWarehouseScope && !!assignedWarehouseId)}
+                  >
+                    <option value="" disabled>
+                      {warehousesLoading ? "Loading warehouses..." : warehouses.length === 0 ? "Create a warehouse first" : "Select warehouse"}
+                    </option>
+                    {scopedWarehouses.map((warehouse) => (
+                      <option key={warehouse.id} value={warehouse.id}>{warehouse.code} — {warehouse.name}</option>
+                    ))}
                   </select>
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--color-input-icon)" }}>▾</span>
                 </div>
@@ -443,14 +552,14 @@ const AddProductView = ({ onCancel, onSaved }: AddProductViewProps) => {
                 </p>
 
                 {/* Upload progress */}
-                {uploadProgress !== null && uploadProgress < 100 && (
-                  <div
-                    className="w-full h-1.5 rounded-full overflow-hidden mb-3"
-                    style={{ background: "var(--color-surface-4)" }}
-                  >
-                    <div
-                      className="h-full rounded-full transition-all"
-                      style={{ width: `${uploadProgress}%`, background: "var(--color-brand-primary)" }}
+{uploadProgress !== null && (
+          <div
+            className="w-full h-1.5 rounded-full overflow-hidden mb-3"
+            style={{ background: "var(--color-surface-4)" }}
+          >
+            <div
+              className="h-full rounded-full transition-all"
+              style={{ width: `${Math.max(uploadProgress, 5)}%`, background: "var(--color-brand-primary)" }}
                     />
                   </div>
                 )}

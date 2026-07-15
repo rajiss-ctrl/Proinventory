@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   MdDashboard, MdInventory, MdShoppingCart, MdReceipt,
   MdPeople, MdWarehouse, MdSwapHoriz, MdBarChart,
@@ -8,6 +8,9 @@ import {
   MdMenu,
 } from "react-icons/md";
 import { logOut } from "../../services/firebase";
+import { clearCurrentUser } from "../../features/auth/authSlice";
+import { clearCompany } from "../../features/company/companySlice";
+import { useDispatch } from "react-redux";
 import Logo from "../../assets/img/stocktrack-logo.png";
 
 interface NavItem {
@@ -23,14 +26,37 @@ interface DashboardSidebarProps {
   collapsed: boolean;
   onToggleCollapse: () => void;
   activeView?: "dashboard" | "add-product";
+  alertCount?: number;
+  messageCount?: number;
+  onAlertsClick?: () => void;
 }
 
-const DashboardSidebar = ({ onNewItem, collapsed, onToggleCollapse, activeView = "dashboard" }: DashboardSidebarProps) => {
-  const location = useLocation();
+const DashboardSidebar = ({
+  onNewItem,
+  collapsed,
+  onToggleCollapse,
+  activeView = "dashboard",
+  alertCount = 0,
+  messageCount = 0,
+  onAlertsClick,
+}: DashboardSidebarProps) => {
+  const location  = useLocation();
+  const navigate  = useNavigate();
+  const dispatch  = useDispatch();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const handleLogout = async () => {
-    try { await logOut(); } catch (err) { alert((err as Error).message); }
+    try {
+      await logOut();
+      dispatch(clearCurrentUser());
+      dispatch(clearCompany());
+      // Clear both storages explicitly
+      sessionStorage.removeItem("currentUser");
+      localStorage.removeItem("currentUser");
+      navigate("/login");
+    } catch (err) {
+      alert((err as Error).message);
+    }
   };
 
   const mainNav: NavItem[] = [
@@ -47,10 +73,10 @@ const DashboardSidebar = ({ onNewItem, collapsed, onToggleCollapse, activeView =
   ];
 
   const bottomNav: NavItem[] = [
-    { label: "Alerts",   icon: <MdNotifications size={18} />, to: "/dashboard", badge: 3 },
-    { label: "Messages", icon: <MdMessage size={18} />,       to: "/dashboard", badge: 2 },
-    { label: "Settings", icon: <MdSettings size={18} />,      to: "/dashboard" },
-    { label: "Log Out",  icon: <MdLogout size={18} />,        onClick: handleLogout },
+    { label: "Alerts", icon: <MdNotifications size={18} />, onClick: onAlertsClick ?? (() => navigate("/dashboard")), badge: alertCount },
+    { label: "Messages", icon: <MdMessage size={18} />, to: "/dashboard", badge: messageCount },
+    { label: "Settings", icon: <MdSettings size={18} />, to: "/dashboard" },
+    { label: "Log Out", icon: <MdLogout size={18} />, onClick: handleLogout },
   ];
 
   const NavLink = ({ item }: { item: NavItem }) => {

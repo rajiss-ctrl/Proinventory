@@ -11,12 +11,13 @@ const useRole = () => {
   const user    = useAppSelector((s) => s.auth.user);
   const profile = useAppSelector((s) => s.auth.profile);
 
-  const role: UserRole =
-    // Priority: user.role (set immediately on login) > profile.role (async fetch) > default
-    (user?.role as UserRole) ??
-    (profile?.role as UserRole) ??
-    "staff";
-  const perms          = profile?.permissions;
+  const role: UserRole | null =
+    // Prefer the authoritative profile role, then fall back to the lightweight session user role.
+    (profile?.role as UserRole | undefined) ??
+    (user?.role as UserRole | undefined) ??
+    null;
+  const perms = profile?.permissions;
+  const assignedWarehouseId = profile?.assignedWarehouseId ?? user?.assignedWarehouseId ?? "";
 
   /* ── Role booleans ── */
   const isSuperAdmin   = role === "super_admin"   || !!user?.isSuperAdmin;
@@ -25,6 +26,7 @@ const useRole = () => {
   const isStaff        = role === "staff";
   const isGuest        = role === "guest";
   const isOwnerOrAdmin = isOwner || isAdmin;
+  const hasWarehouseScope = !isOwner && !isSuperAdmin && !!assignedWarehouseId;
 
   /* ── Permission helpers ── */
   const canRead   = (mod: keyof NonNullable<typeof perms>) =>
@@ -61,6 +63,8 @@ const useRole = () => {
     canManageUsers,
     canViewReports,
     canManageSettings,
+    assignedWarehouseId,
+    hasWarehouseScope,
     user,
     profile,
   };

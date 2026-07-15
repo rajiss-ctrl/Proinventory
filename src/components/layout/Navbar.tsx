@@ -2,6 +2,9 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { FaBars, FaTimes, FaChevronDown } from "react-icons/fa";
 import { useAuth, logOut } from "../../services/firebase";
+import { clearCurrentUser } from "../../features/auth/authSlice";
+import { clearCompany } from "../../features/company/companySlice";
+import { useDispatch } from "react-redux";
 import Logo from "../../assets/img/stocktrack-logo.png";
 
 const NAV_LINKS = [
@@ -22,13 +25,18 @@ const NAV_LINKS = [
 ];
 
 const Navbar = () => {
-  const navigate = useNavigate();
+  const navigate   = useNavigate();
+  const dispatch   = useDispatch();
   const currentUser = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
   const handleLogout = async () => {
     await logOut();
+    dispatch(clearCurrentUser());
+    dispatch(clearCompany());
+    sessionStorage.removeItem("currentUser");
+    localStorage.removeItem("currentUser");
     navigate("/");
   };
 
@@ -157,7 +165,7 @@ const Navbar = () => {
                   className="px-4 py-2 text-sm font-medium transition-colors"
                   style={{ color: "var(--color-text-secondary)" }}
                 >
-                  Log out
+                  Sign Out
                 </button>
               </>
             ) : (
@@ -175,7 +183,7 @@ const Navbar = () => {
                       "var(--color-text-secondary)")
                   }
                 >
-                  Log In
+                  Sign In
                 </Link>
                 <Link
                   to="/register"
