@@ -7,7 +7,6 @@ dist-ssr
 
 # ── Environment / secrets — NEVER commit these ───────────────
 .env
-.env.example
 .env.local
 .env.development
 .env.development.local
@@ -16,7 +15,6 @@ dist-ssr
 .env.test
 .env.test.local
 *.env
-*.env.example
 *.env.local
 
 # ── Logs ─────────────────────────────────────────────────────
