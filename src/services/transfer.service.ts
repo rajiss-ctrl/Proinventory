@@ -8,20 +8,25 @@ import {
   query,
   where,
   setDoc,
-  deleteDoc,
   DocumentReference,
-  increment,
+  orderBy,
+  limit,
+  startAfter,
+  getCountFromServer,
+  QueryDocumentSnapshot,
+  Query,
 } from "firebase/firestore";
-import { Transfer, StockMovement, Product, InventoryRecord } from "../types";
+import { Transfer, TransferItem } from "../types";
 import { InventoryService } from "./inventory.service";
 
-// Type for transfer items
-interface TransferItem {
-  productId: string;
-  productName: string;
-  sku?: string;
-  quantity: number;
-  id?: string;
+
+
+// Type for pagination response
+export interface PaginatedTransfers {
+  transfers: Transfer[];
+  totalCount: number;
+  lastVisible: QueryDocumentSnapshot | null;
+  hasMore: boolean;
 }
 
 // Type for transfer data from Firestore
@@ -52,7 +57,7 @@ interface ProductData {
 
 export class TransferService {
   /**
-   * Fetch transfers for a specific company
+   * Fetch transfers for a specific company (legacy - kept for compatibility)
    */
   static async list(companyId: string): Promise<Transfer[]> {
     const ref = collection(db, "companies", companyId, "transfers");
@@ -61,6 +66,71 @@ export class TransferService {
       id: docSnap.id,
       ...docSnap.data(),
     })) as Transfer[];
+  }
+
+  /**
+   * Fetch transfers with pagination
+   */
+  static async listPaginated(
+    companyId: string,
+    pageSize: number = 10,
+    lastVisible?: QueryDocumentSnapshot,
+    statusFilter?: string
+  ): Promise<PaginatedTransfers> {
+    const ref = collection(db, "companies", companyId, "transfers");
+    
+    // Build base query
+    let q: Query = query(
+      ref,
+      orderBy("createdAt", "desc"),
+      limit(pageSize)
+    );
+
+    // Add status filter if provided
+    if (statusFilter && statusFilter !== "all") {
+      q = query(q, where("status", "==", statusFilter));
+    }
+
+    // Add startAfter for pagination
+    if (lastVisible) {
+      q = query(q, startAfter(lastVisible));
+    }
+
+    // Get total count (cached or separate query)
+    let countQuery: Query = ref;
+    if (statusFilter && statusFilter !== "all") {
+      countQuery = query(ref, where("status", "==", statusFilter));
+    }
+    const countSnapshot = await getCountFromServer(countQuery);
+    const totalCount = countSnapshot.data().count;
+
+    // Get paginated results
+    const snap = await getDocs(q);
+    const transfers = snap.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...docSnap.data(),
+    })) as Transfer[];
+
+    const lastDoc = snap.docs.length > 0 ? snap.docs[snap.docs.length - 1] : null;
+
+    return {
+      transfers,
+      totalCount,
+      lastVisible: lastDoc,
+      hasMore: snap.docs.length === pageSize,
+    };
+  }
+
+  /**
+   * Get transfers by status (for filtering)
+   */
+  static async listByStatus(
+    companyId: string,
+    status: Transfer["status"],
+    pageSize: number = 10,
+    lastVisible?: QueryDocumentSnapshot
+  ): Promise<PaginatedTransfers> {
+    return this.listPaginated(companyId, pageSize, lastVisible, status);
   }
 
   /**
@@ -101,42 +171,201 @@ export class TransferService {
     }
 
     await setDoc(docRef, newTransfer);
+
+    // ✅ CREATE NOTIFICATION FOR THE TRANSFER
+    await this.createTransferNotification(data.companyId, {
+      transferId: docRef.id,
+      transferNumber,
+      fromWarehouseName: data.fromWarehouseName,
+      toWarehouseName: data.toWarehouseName,
+      items: data.items,
+      notes: data.notes,
+      createdBy: data.createdBy,
+    });
+
     return docRef.id;
   }
+
+ static async createTransferNotification(
+  companyId: string,
+  data: {
+    transferId: string;
+    transferNumber: string;
+    fromWarehouseName: string;
+    toWarehouseName: string;
+    items: Array<{ productId: string; productName: string; sku?: string; quantity: number }>;
+    notes?: string;
+    createdBy: string;
+  }
+) {
+  try {
+    // ✅ Ensure we have a valid transfer ID
+    if (!data.transferId) {
+      console.error("[TransferService] Cannot create transfer notification: transferId is undefined", data);
+      return;
+    }
+
+    const notificationRef = collection(db, "companies", companyId, "notifications");
+    const totalItems = data.items.reduce((sum, item) => sum + item.quantity, 0);
+    const itemNames = data.items.map(item => `${item.productName} (${item.quantity})`).join(", ");
+    
+    // Build detailed message with notes
+    let message = `${data.fromWarehouseName} → ${data.toWarehouseName}: ${totalItems} units`;
+    
+    // Add item details
+    if (data.items.length > 0) {
+      message += `\nItems: ${itemNames}`;
+    }
+    
+    // Add notes if present
+    if (data.notes && data.notes.trim()) {
+      message += `\n📝 Notes: ${data.notes.trim()}`;
+    }
+    
+    const notification = {
+      type: "transfer_request",
+      title: `📦 New Transfer: ${data.transferNumber}`,
+      message: message,
+      transferId: data.transferId,
+      transferNumber: data.transferNumber,
+      fromWarehouse: data.fromWarehouseName,
+      toWarehouse: data.toWarehouseName,
+      items: data.items,
+      totalItems,
+      notes: data.notes || "",
+      status: "unread",
+      createdAt: serverTimestamp(),
+      createdBy: data.createdBy,
+      readAt: null,
+    };
+
+    // ✅ Log the notification before saving
+    console.log(`[TransferService] Creating transfer notification:`, notification);
+
+    const docRef = doc(notificationRef);
+    await setDoc(docRef, notification);
+    console.log(`✅ [TransferService] Notification created for transfer ${data.transferNumber}`);
+  } catch (error) {
+    console.error("[TransferService] Failed to create notification:", error);
+  }
+}
+
+ /**
+ * Create notification for transfer status update (completed or cancelled)
+ */
+static async createStatusUpdateNotification(
+  companyId: string,
+  transfer: TransferData,
+  status: Transfer["status"]
+) {
+  try {
+    // ✅ Ensure we have a valid transfer ID
+    if (!transfer.id) {
+      console.error("[TransferService] Cannot create status notification: transfer.id is undefined", transfer);
+      return;
+    }
+
+    const notificationRef = collection(db, "companies", companyId, "notifications");
+    const totalItems = (transfer.items ?? []).reduce((sum, item) => sum + item.quantity, 0);
+    const itemNames = (transfer.items ?? []).map(item => `${item.productName} (${item.quantity})`).join(", ");
+    
+    let title: string;
+    let message: string;
+    let type: string;
+
+    if (status === "completed") {
+      title = `✅ Transfer Completed: ${transfer.transferNumber}`;
+      message = `${transfer.fromWarehouseName} → ${transfer.toWarehouseName}\nItems: ${itemNames}\nTotal: ${totalItems} units successfully transferred`;
+      type = "transfer_completed";
+    } else if (status === "cancelled") {
+      title = `❌ Transfer Cancelled: ${transfer.transferNumber}`;
+      message = `${transfer.fromWarehouseName} → ${transfer.toWarehouseName}\nItems: ${itemNames}\nTotal: ${totalItems} units cancelled`;
+      type = "transfer_cancelled";
+    } else {
+      return;
+    }
+
+    // Add notes if present
+    if (transfer.notes && transfer.notes.trim()) {
+      message += `\n📝 Notes: ${transfer.notes.trim()}`;
+    }
+
+    const notification = {
+      type,
+      title,
+      message,
+      transferId: transfer.id, // ✅ Now this should be defined
+      transferNumber: transfer.transferNumber || `TRF-${Date.now()}`,
+      fromWarehouse: transfer.fromWarehouseName || transfer.fromWarehouseId,
+      toWarehouse: transfer.toWarehouseName || transfer.toWarehouseId,
+      items: transfer.items || [],
+      totalItems,
+      notes: transfer.notes || "",
+      status: "unread",
+      createdAt: serverTimestamp(),
+      createdBy: transfer.createdBy || "system",
+      readAt: null,
+    };
+
+    // ✅ Log the notification before saving
+    console.log(`[TransferService] Creating status notification:`, notification);
+
+    const docRef = doc(notificationRef);
+    await setDoc(docRef, notification);
+    console.log(`✅ [TransferService] Notification created for transfer ${transfer.transferNumber} status: ${status}`);
+  } catch (error) {
+    console.error("[TransferService] Failed to create status notification:", error);
+    // Don't throw - we don't want to fail the transfer if notification fails
+  }
+}
 
   /**
    * Update status (for cancellations)
    * Releases reserved stock when cancelled
    */
   static async updateStatus(companyId: string, transferId: string, status: Transfer["status"]) {
-    const transferRef = doc(db, "companies", companyId, "transfers", transferId);
+  const transferRef = doc(db, "companies", companyId, "transfers", transferId);
+  
+  let transferData: TransferData | null = null;
+
+  await runTransaction(db, async (transaction) => {
+    const transferSnap = await transaction.get(transferRef);
+    if (!transferSnap.exists()) {
+      throw new Error("Transfer not found.");
+    }
     
-    await runTransaction(db, async (transaction) => {
-      const transferSnap = await transaction.get(transferRef);
-      if (!transferSnap.exists()) {
-        throw new Error("Transfer not found.");
+    const transfer = transferSnap.data() as TransferData;
+    
+    // ✅ Ensure the ID is set on the transfer data
+    transferData = {
+      ...transfer,
+      id: transferId, // ✅ Explicitly set the ID
+    };
+    
+    // If cancelling, release reserved stock
+    if (status === "cancelled" && (transfer.status === "pending" || transfer.status === "in_transit")) {
+      for (const item of (transfer.items ?? [])) {
+        await InventoryService.release(
+          companyId,
+          item.productId,
+          transfer.fromWarehouseId,
+          item.quantity
+        );
       }
-      
-      const transfer = transferSnap.data() as TransferData;
-      
-      // If cancelling, release reserved stock
-      if (status === "cancelled" && (transfer.status === "pending" || transfer.status === "in_transit")) {
-        for (const item of (transfer.items ?? [])) {
-          await InventoryService.release(
-            companyId,
-            item.productId,
-            transfer.fromWarehouseId,
-            item.quantity
-          );
-        }
-      }
-      
-      transaction.update(transferRef, {
-        status,
-        updatedAt: serverTimestamp(),
-      });
+    }
+    
+    transaction.update(transferRef, {
+      status,
+      updatedAt: serverTimestamp(),
     });
+  });
+
+  // Create notification for status change (completed or cancelled)
+  if (transferData && (status === "completed" || status === "cancelled")) {
+    console.log(`[TransferService] Creating status notification for transfer:`, transferData);
+    await this.createStatusUpdateNotification(companyId, transferData, status);
   }
+}
 
   /**
    * Confirms receipt of a transfer request.
@@ -146,25 +375,28 @@ export class TransferService {
    * - Logs stock movements
    */
   static async confirmReceipt(
-    companyId: string,
-    transferId: string,
-    receivedByUid: string,
-    userWarehouseScope?: string
-  ) {
-    const transferRef = doc(db, "companies", companyId, "transfers", transferId);
+  companyId: string,
+  transferId: string,
+  receivedByUid: string,
+  userWarehouseScope?: string
+) {
+  const transferRef = doc(db, "companies", companyId, "transfers", transferId);
+  let transferData: TransferData | null = null;
 
-    await runTransaction(db, async (transaction) => {
-      // ============================================================
-      // STEP 1: READ ALL DATA FIRST
-      // ============================================================
-      
-      // Read transfer document
-      const transferSnap = await transaction.get(transferRef);
-      if (!transferSnap.exists()) {
-        throw new Error("Transfer request not found.");
-      }
+  await runTransaction(db, async (transaction) => {
+    // Read transfer document
+    const transferSnap = await transaction.get(transferRef);
+    if (!transferSnap.exists()) {
+      throw new Error("Transfer request not found.");
+    }
 
-      const transfer = transferSnap.data() as TransferData;
+    const transfer = transferSnap.data() as TransferData;
+    
+    // ✅ Ensure the ID is set on the transfer data
+    transferData = {
+      ...transfer,
+      id: transferId, // ✅ Explicitly set the ID
+    };
 
       if (transfer.status === "completed") {
         throw new Error("This transfer has already been completed.");
@@ -277,7 +509,6 @@ export class TransferService {
         console.log(`[Transfer]   Reserved: ${reserved} -> ${newReserved}`);
 
         // 1. UPDATE SOURCE WAREHOUSE INVENTORY (DEDUCT)
-        // This MUST happen - it's the most important part
         transaction.set(fromRef, {
           productId: item.productId,
           productName: item.productName,
@@ -292,7 +523,6 @@ export class TransferService {
         }, { merge: true });
 
         // 2. UPDATE DESTINATION WAREHOUSE INVENTORY (CREATE OR ADD)
-        // This creates the inventory record if it doesn't exist
         const toDataToSave: any = {
           productId: item.productId,
           productName: item.productName,
@@ -306,7 +536,6 @@ export class TransferService {
           updatedAt: serverTimestamp(),
         };
 
-        // If this is a new inventory record, add createdAt
         if (!toData) {
           toDataToSave.createdAt = serverTimestamp();
         }
@@ -314,8 +543,6 @@ export class TransferService {
         transaction.set(toRef, toDataToSave, { merge: true });
 
         // 3. UPDATE PRODUCT'S TOTAL STOCK QUANTITY
-        // Sum across all warehouses for accurate total
-        // For simplicity, we update with a calculated total
         const totalQty = newFromQty + newToQty;
         transaction.update(productRef, {
           stockQuantity: totalQty,
@@ -371,6 +598,11 @@ export class TransferService {
       
       console.log(`[Transfer] Transfer ${transferId} completed successfully!`);
     });
+
+    // Create notification for completed transfer
+    if (transferData) {
+      await this.createStatusUpdateNotification(companyId, transferData, "completed");
+    }
   }
 
   /**

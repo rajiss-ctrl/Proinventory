@@ -1,14 +1,18 @@
-/**
- * stock-movement.service.ts
- * Append-only log: companies/{companyId}/stockMovements/{movementId}
- * Never update or delete — immutable audit trail.
- */
 import {
   collection, doc, setDoc, getDocs,
   query, where, orderBy, limit,
+  getCountFromServer, startAfter, QueryDocumentSnapshot,
 } from "firebase/firestore";
 import db from "./firebase";
 import { StockMovement, StockMovementType } from "../types";
+
+// Type for pagination response
+export interface PaginatedMovements {
+  movements: StockMovement[];
+  totalCount: number;
+  lastVisible: QueryDocumentSnapshot | null;
+  hasMore: boolean;
+}
 
 export interface LogMovementInput {
   companyId:     string;
@@ -70,5 +74,70 @@ export const StockMovementService = {
       )
     );
     return snap.docs.map((d) => ({ id: d.id, ...d.data() } as StockMovement));
+  },
+
+  /**
+   * Fetch movements with pagination
+   */
+  async listPaginated(
+    companyId: string,
+    pageSize: number = 20,
+    lastVisible?: QueryDocumentSnapshot,
+    typeFilter?: string
+  ): Promise<PaginatedMovements> {
+    const ref = collection(db, "companies", companyId, "stockMovements");
+    
+    // Build base query
+    let q = query(
+      ref,
+      orderBy("createdAt", "desc"),
+      limit(pageSize)
+    );
+
+    // Add type filter if provided
+    if (typeFilter && typeFilter !== "all") {
+      q = query(q, where("type", "==", typeFilter));
+    }
+
+    // Add startAfter for pagination
+    if (lastVisible) {
+      q = query(q, startAfter(lastVisible));
+    }
+
+    // Get total count
+    let countQuery = ref;
+    if (typeFilter && typeFilter !== "all") {
+      countQuery = query(ref, where("type", "==", typeFilter));
+    }
+    const countSnapshot = await getCountFromServer(countQuery);
+    const totalCount = countSnapshot.data().count;
+
+    // Get paginated results
+    const snap = await getDocs(q);
+    const movements = snap.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...docSnap.data(),
+    })) as StockMovement[];
+
+    const lastDoc = snap.docs.length > 0 ? snap.docs[snap.docs.length - 1] : null;
+
+    return {
+      movements,
+      totalCount,
+      lastVisible: lastDoc,
+      hasMore: snap.docs.length === pageSize,
+    };
+  },
+
+  /**
+   * Get movements by type (for filtering)
+   */
+  async listByType(
+    companyId: string,
+    type: StockMovementType,
+    pageSize: number = 20,
+    lastVisible?: QueryDocumentSnapshot
+  ): Promise<PaginatedMovements> {
+    return this.listPaginated(companyId, pageSize, lastVisible, type);
   },
 };

@@ -1,18 +1,19 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Chart as ChartJS,
   CategoryScale, LinearScale,
   BarElement, ArcElement,
   LineElement, PointElement,
   Tooltip, Legend, Filler,
+  type ChartOptions,
 } from "chart.js";
 import { Bar, Doughnut, Line } from "react-chartjs-2";
-import { MdTrendingUp, MdTrendingDown, MdInfoOutline } from "react-icons/md";
+import { MdTrendingUp, MdTrendingDown, MdInfoOutline, MdCheckCircle, MdSwapHoriz, MdInventory2, MdAttachMoney } from "react-icons/md";
 import { FiEdit2, FiMoreHorizontal } from "react-icons/fi";
 import { useSelector } from "react-redux";
 import { RootState } from "../../app/store";
 import { Product } from "../../types";
-import Spinner from "../../assets/img/spinner.svg";
+import { StockMovementService } from "../../services/stock-movement.service";
 
 ChartJS.register(
   CategoryScale, LinearScale, BarElement, ArcElement,
@@ -135,8 +136,9 @@ export const InventoryTurnoverChart = ({ productsOverride }: InventoryTurnoverCh
     ],
   };
 
-  const options: any = {
-    responsive: true, maintainAspectRatio: false,
+  const options: ChartOptions<"bar"> = {
+    responsive: true,
+    maintainAspectRatio: false,
     plugins: {
       legend: {
         display: true,
@@ -144,7 +146,7 @@ export const InventoryTurnoverChart = ({ productsOverride }: InventoryTurnoverCh
         align: "start" as const,
         labels: { color: "#94a3b8", boxWidth: 10, font: { size: 11 }, padding: 12 },
       },
-      tooltip: { mode: "index", intersect: false },
+      tooltip: { mode: "index" as const, intersect: false },
     },
     scales: {
       x: {
@@ -156,8 +158,9 @@ export const InventoryTurnoverChart = ({ productsOverride }: InventoryTurnoverCh
         stacked: true,
         grid: { color: "rgba(255,255,255,0.05)" },
         ticks: {
-          color: "#64748b", font: { size: 11 },
-          callback: (v: number) => v >= 1000 ? `${v / 1000}K` : v,
+          color: "#64748b",
+          font: { size: 11 },
+          callback: (v: number | string) => Number(v) >= 1000 ? `${Number(v) / 1000}K` : v,
         },
       },
     },
@@ -227,13 +230,15 @@ export const CategoryDonutChart = ({ productsOverride }: CategoryDonutChartProps
     }],
   };
 
-  const options: any = {
-    responsive: true, maintainAspectRatio: false, cutout: "68%",
+  const options: ChartOptions<"doughnut"> = {
+    responsive: true,
+    maintainAspectRatio: false,
+    cutout: "68%",
     plugins: {
       legend: { display: false },
       tooltip: {
         callbacks: {
-          label: (ctx: any) => ` ${ctx.label}: ${PCT[ctx.dataIndex]}%`,
+          label: (context) => ` ${context.label}: ${PCT[context.dataIndex]}%`,
         },
       },
     },
@@ -299,17 +304,31 @@ export const LowStockPanel = ({ productsOverride }: LowStockPanelProps) => {
 
   const LOW = 10;
   const lowItems = products
-    .filter((p: Product) => p.product_Qty <= LOW)
+    .filter((p: Product) => p.product_Qty <= LOW && p.product_Qty > 0)
     .slice(0, 5);
 
-  const fallback = [
-    { id: "f1", product_name: "Wireless Headphones", sku: "SKU-1024", product_Qty: 3 },
-    { id: "f2", product_name: "Smart Watch Series 5", sku: "SKU-1031", product_Qty: 2 },
-    { id: "f3", product_name: "Organic Quinoa 1kg",  sku: "SKU-2047", product_Qty: 1 },
-    { id: "f4", product_name: "Ergonomic Office Chair", sku: "SKU-3055", product_Qty: 0 },
-  ];
-
-  const items = lowItems.length > 0 ? lowItems : fallback;
+  // Show empty state when no low stock items
+  if (lowItems.length === 0) {
+    return (
+      <div
+        className="rounded-xl p-4 flex flex-col items-center justify-center min-h-[200px]"
+        style={{ background: "var(--color-surface-1)", border: "1px solid var(--color-border-soft)" }}
+      >
+        <div className="text-center">
+          <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3"
+            style={{ background: "var(--color-stock-in-soft)" }}>
+            <MdCheckCircle size={24} style={{ color: "var(--color-stock-in)" }} />
+          </div>
+          <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+            All Stock Levels Are Healthy
+          </p>
+          <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
+            No products are currently low on stock. Great job managing your inventory!
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const stockColor = (qty: number) =>
     qty === 0 ? "var(--color-danger)" : qty <= 3 ? "var(--color-warning)" : "var(--color-success)";
@@ -327,32 +346,35 @@ export const LowStockPanel = ({ productsOverride }: LowStockPanelProps) => {
       </div>
 
       <ul className="space-y-3">
-        {items.map((item: any, i: number) => (
-          <li key={item.id ?? i} className="flex items-center gap-3">
-            <div
-              className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 text-lg"
-              style={{ background: "var(--color-surface-3)" }}
-            >
-              {item.img
-                ? <img src={item.img} alt="" className="w-full h-full rounded-lg object-cover" />
-                : "📦"}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-semibold truncate" style={{ color: "var(--color-text-primary)" }}>
-                {item.product_name}
-              </p>
-              <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
-                {item.sku ?? `SKU-${item.id?.slice(0, 6).toUpperCase()}`}
-              </p>
-            </div>
-            <div className="shrink-0 text-right">
-              <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>Stock</p>
-              <p className="text-sm font-extrabold" style={{ color: stockColor(item.product_Qty) }}>
-                {item.product_Qty}
-              </p>
-            </div>
-          </li>
-        ))}
+        {lowItems.map((item, i) => {
+          const product = item as Product;
+          return (
+            <li key={product.id ?? i} className="flex items-center gap-3">
+              <div
+                className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 text-lg"
+                style={{ background: "var(--color-surface-3)" }}
+              >
+                {product.img
+                  ? <img src={product.img} alt="" className="w-full h-full rounded-lg object-cover" />
+                  : "📦"}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold truncate" style={{ color: "var(--color-text-primary)" }}>
+                  {product.product_name}
+                </p>
+                <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                  {product.sku ?? `SKU-${product.id?.slice(0, 6).toUpperCase()}`}
+                </p>
+              </div>
+              <div className="shrink-0 text-right">
+                <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>Stock</p>
+                <p className="text-sm font-extrabold" style={{ color: stockColor(product.product_Qty) }}>
+                  {product.product_Qty}
+                </p>
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -361,6 +383,8 @@ export const LowStockPanel = ({ productsOverride }: LowStockPanelProps) => {
 /* ─────────────────────────────────────────────────────────────
    RECENT ACTIVITY PANEL
 ───────────────────────────────────────────────────────────── */
+
+// ✅ Define ActivityItem interface before using it
 interface ActivityItem {
   icon: string;
   iconBg: string;
@@ -373,46 +397,118 @@ interface RecentActivityPanelProps {
 }
 
 export const RecentActivityPanel = ({ productsOverride }: RecentActivityPanelProps) => {
+  // ✅ Use products to check if there's any data
   const reduxProducts = useSelector((s: RootState) => s.stock.productData);
+  // We keep this to maintain consistency with other components, but it's not used in this component
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const products = productsOverride ?? reduxProducts;
+  const companyId = useSelector((s: RootState) => s.auth.profile?.companyId ?? s.auth.user?.companyId) ?? "";
+  const [activities, setActivities] = useState<ActivityItem[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const activities: ActivityItem[] = useMemo(() => {
-    const base: ActivityItem[] = [
-      {
-        icon: "📦",
-        iconBg: "var(--color-stock-in-soft)",
-        text: <><strong>John Anderson</strong> updated quantity for <strong>Wireless Headphones (SKU-1024)</strong></>,
-        time: "2m ago",
-      },
-      {
-        icon: "🛒",
-        iconBg: "var(--color-info-soft)",
-        text: <>New order <strong>#ORD-1048</strong> has been created</>,
-        time: "15m ago",
-      },
-      {
-        icon: "✏️",
-        iconBg: "var(--color-warning-soft)",
-        text: <><strong>Sarah Johnson</strong> updated price for <strong>Organic Quinoa 1kg (SKU-2047)</strong></>,
-        time: "32m ago",
-      },
-      {
-        icon: "🏭",
-        iconBg: "var(--color-stock-low-soft)",
-        text: <>Stock transfer received at <strong>Warehouse B</strong></>,
-        time: "1h ago",
-      },
-    ];
-    if (products.length > 0) {
-      base[0] = {
-        icon: "📦",
-        iconBg: "var(--color-stock-in-soft)",
-        text: <>Stock updated for <strong>{products[0].product_name}</strong></>,
-        time: "Just now",
-      };
-    }
-    return base;
-  }, [products]);
+  // Helper function to format time ago
+  const getTimeAgo = (date: Date): string => {
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return date.toLocaleDateString();
+  };
+
+  // Load real activity data
+  useEffect(() => {
+    const loadActivities = async () => {
+      if (!companyId) {
+        setLoading(false);
+        return;
+      }
+      
+      try {
+        setLoading(true);
+        // Get recent stock movements
+        const movements = await StockMovementService.listRecent(companyId, 5);
+        
+        const activityItems: ActivityItem[] = movements.map((movement) => {
+          const isPositive = movement.quantity > 0;
+          const icon = isPositive ? "📦" : "📤";
+          const iconBg = isPositive ? "var(--color-stock-in-soft)" : "var(--color-stock-out-soft)";
+          const action = isPositive ? "added" : "removed";
+          
+          const d = movement.createdAt instanceof Date
+            ? movement.createdAt
+            : typeof movement.createdAt === "object" && movement.createdAt !== null && "toDate" in movement.createdAt
+              ? movement.createdAt.toDate()
+              : new Date();
+          
+          const timeAgo = getTimeAgo(d);
+          
+          return {
+            icon,
+            iconBg,
+            text: (
+              <>
+                <strong>{movement.productName}</strong> {action} <strong>{Math.abs(movement.quantity)}</strong> units
+                {movement.type && ` (${movement.type.replace("_", " ")})`}
+              </>
+            ),
+            time: timeAgo,
+          };
+        });
+        
+        setActivities(activityItems);
+      } catch (error) {
+        console.error("Failed to load activities:", error);
+        setActivities([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    loadActivities();
+  }, [companyId]);
+
+  // Show loading state
+  if (loading) {
+    return (
+      <div
+        className="rounded-xl p-4 flex flex-col items-center justify-center min-h-[200px]"
+        style={{ background: "var(--color-surface-1)", border: "1px solid var(--color-border-soft)" }}
+      >
+        <div className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin"
+          style={{ borderColor: "var(--color-brand-primary)" }} />
+        <p className="text-xs mt-2" style={{ color: "var(--color-text-muted)" }}>Loading activity...</p>
+      </div>
+    );
+  }
+
+  // Show empty state when no activities exist
+  if (activities.length === 0) {
+    return (
+      <div
+        className="rounded-xl p-4 flex flex-col items-center justify-center min-h-[200px]"
+        style={{ background: "var(--color-surface-1)", border: "1px solid var(--color-border-soft)" }}
+      >
+        <div className="text-center">
+          <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3"
+            style={{ background: "var(--color-surface-3)" }}>
+            <MdSwapHoriz size={24} style={{ color: "var(--color-text-faint)" }} />
+          </div>
+          <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+            No Recent Activity
+          </p>
+          <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
+            Activity will appear here when you start adding products, making transfers, or updating inventory.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -456,39 +552,55 @@ export const RecentActivityPanel = ({ productsOverride }: RecentActivityPanelPro
 interface ProductsTableProps {
   onEdit?: (id: string) => void;
   onAdd?:  () => void;
+  onSell?: (product: Product) => void;
   readOnly?: boolean;
   productsOverride?: Product[];
 }
 
-export const ProductsTable = ({ onEdit, onAdd, readOnly = false, productsOverride }: ProductsTableProps) => {
+export const ProductsTable = ({ onEdit, onAdd,onSell, readOnly = false, productsOverride }: ProductsTableProps) => {
   const reduxProducts = useSelector((s: RootState) => s.stock.productData);
   const products = productsOverride ?? reduxProducts;
 
-  const FALLBACK = [
-    { id: "f1", product_name: "Wireless Headphones", sku: "SKU-1024", category: "Electronics",  product_Price: 129.99, product_Qty: 3,   size: "Piece" },
-    { id: "f2", product_name: "Smart Watch Series 5", sku: "SKU-1031", category: "Electronics",  product_Price: 249.99, product_Qty: 2,   size: "Piece" },
-    { id: "f3", product_name: "Organic Quinoa 1kg",   sku: "SKU-2047", category: "Groceries",    product_Price: 6.49,   product_Qty: 1,   size: "Bag"   },
-    { id: "f4", product_name: "Ergonomic Office Chair",sku: "SKU-3055", category: "Home & Kitchen",product_Price: 349.00, product_Qty: 0,  size: "Piece" },
-    { id: "f5", product_name: "Yoga Mat Eco",          sku: "SKU-4021", category: "Sports & Outdoors",product_Price: 29.99, product_Qty: 120, size: "Piece" },
-    { id: "f6", product_name: "Cotton T-Shirt (M)",    sku: "SKU-5012", category: "Apparel",      product_Price: 14.99,  product_Qty: 250, size: "Piece" },
-  ];
+  // If no products, show empty state
+  if (products.length === 0) {
+    return (
+      <div
+        className="rounded-xl flex flex-col items-center justify-center min-h-[300px]"
+        style={{ background: "var(--color-surface-1)", border: "1px solid var(--color-border-soft)" }}
+      >
+        <div className="text-center p-8">
+          <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"
+            style={{ background: "var(--color-surface-3)" }}>
+            <MdInventory2 size={32} style={{ color: "var(--color-text-faint)" }} />
+          </div>
+          <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+            No Products Added Yet
+          </p>
+          <p className="text-xs mt-1 max-w-sm mx-auto" style={{ color: "var(--color-text-muted)" }}>
+            Start by adding your first product to track inventory, stock levels, and orders.
+          </p>
+          {onAdd && (
+            <button
+              onClick={onAdd}
+              className="mt-4 px-4 py-2 rounded-xl text-sm font-semibold transition-all hover:opacity-80"
+              style={{ background: "var(--color-brand-primary)", color: "white" }}
+            >
+              + Add Your First Product
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
-  const rows = products.length > 0
-    ? products.map((p: Product, i: number) => ({
-        ...p,
-        sku: `SKU-${p.id.slice(0, 4).toUpperCase()}`,
-        category: p.categoryName || p.product_description || "General",
-      }))
-    : FALLBACK;
+  const PAGE_SIZE = 6;
+  const visible = products.slice(0, PAGE_SIZE);
 
-  const statusInfo = (qty: number) => {
+  const statusInfo = (qty: number): { label: string; bg: string; text: string; border: string } => {
     if (qty === 0)  return { label: "Out of Stock", bg: "var(--color-stock-out-soft)",   text: "var(--color-stock-out)",   border: "var(--color-stock-out-border)" };
     if (qty <= 5)   return { label: "Low Stock",    bg: "var(--color-stock-low-soft)",   text: "var(--color-stock-low)",   border: "var(--color-stock-low-border)" };
     return           { label: "In Stock",           bg: "var(--color-stock-in-soft)",    text: "var(--color-stock-in)",    border: "var(--color-stock-in-border)" };
   };
-
-  const PAGE_SIZE = 6;
-  const visible = rows.slice(0, PAGE_SIZE);
 
   return (
     <div
@@ -504,7 +616,6 @@ export const ProductsTable = ({ onEdit, onAdd, readOnly = false, productsOverrid
           Products Overview
         </h3>
         <div className="flex items-center gap-2">
-          {/* Search */}
           <div
             className="flex items-center gap-2 h-8 px-3 rounded-lg text-xs"
             style={{
@@ -515,7 +626,6 @@ export const ProductsTable = ({ onEdit, onAdd, readOnly = false, productsOverrid
           >
             🔍 Search products...
           </div>
-          {/* Filters */}
           <button
             className="h-8 px-3 rounded-lg text-xs flex items-center gap-1"
             style={{
@@ -549,11 +659,12 @@ export const ProductsTable = ({ onEdit, onAdd, readOnly = false, productsOverrid
             </tr>
           </thead>
           <tbody>
-            {visible.map((item: any) => {
-              const status = statusInfo(item.product_Qty);
+            {visible.map((item) => {
+              const product = item as Product;
+              const status = statusInfo(product.product_Qty ?? 0);
               return (
                 <tr
-                  key={item.id}
+                  key={product.id}
                   className="transition-colors"
                   style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-surface-2)")}
@@ -562,26 +673,26 @@ export const ProductsTable = ({ onEdit, onAdd, readOnly = false, productsOverrid
                   <td className="px-4 py-3">
                     <input type="checkbox" className="accent-indigo-500 w-3.5 h-3.5" />
                   </td>
-                  <td className="px-4 py-3" style={{ color: "var(--color-text-muted)" }}>{item.sku}</td>
+                  <td className="px-4 py-3" style={{ color: "var(--color-text-muted)" }}>{product.sku}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <div
                         className="w-7 h-7 rounded-md flex items-center justify-center shrink-0 text-sm"
                         style={{ background: "var(--color-surface-3)" }}
                       >
-                        {item.img ? <img src={item.img} className="w-full h-full rounded-md object-cover" alt="" /> : "📦"}
+                        {product.img ? <img src={product.img} className="w-full h-full rounded-md object-cover" alt="" /> : "📦"}
                       </div>
                       <span className="font-medium truncate max-w-[120px]" style={{ color: "var(--color-text-primary)" }}>
-                        {item.product_name}
+                        {product.product_name}
                       </span>
                     </div>
                   </td>
-                  <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>{item.category}</td>
+                  <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>{product.categoryName}</td>
                   <td className="px-4 py-3 font-medium" style={{ color: "var(--color-text-primary)" }}>
-                    ${Number(item.product_Price).toFixed(2)}
+                    ${Number(product.product_Price).toFixed(2)}
                   </td>
                   <td className="px-4 py-3 font-medium" style={{ color: "var(--color-text-primary)" }}>
-                    {item.product_Qty}
+                    {product.product_Qty}
                   </td>
                   <td className="px-4 py-3">
                     <span
@@ -596,9 +707,20 @@ export const ProductsTable = ({ onEdit, onAdd, readOnly = false, productsOverrid
                       <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>View only</span>
                     ) : (
                       <div className="flex items-center gap-2">
+                        {/* ✅ Sell Button - New */}
+                        {onSell && product.product_Qty > 0 && (
+                          <button
+                            onClick={() => onSell(product)}
+                            className="w-6 h-6 flex items-center justify-center rounded transition-colors hover:bg-green-500/10"
+                            style={{ color: "var(--color-success)" }}
+                            title="Sell product"
+                          >
+                            <MdAttachMoney size={12} />
+                          </button>
+                        )}
                         {onEdit && (
                           <button
-                            onClick={() => onEdit(item.id)}
+                            onClick={() => onEdit(product.id)}
                             className="w-6 h-6 flex items-center justify-center rounded"
                             style={{ color: "var(--color-text-muted)" }}
                           >
@@ -626,7 +748,7 @@ export const ProductsTable = ({ onEdit, onAdd, readOnly = false, productsOverrid
           color: "var(--color-text-muted)",
         }}
       >
-        <span>Showing 1 to {Math.min(PAGE_SIZE, rows.length)} of {rows.length} products</span>
+        <span>Showing 1 to {Math.min(PAGE_SIZE, products.length)} of {products.length} products</span>
         <div className="flex items-center gap-1">
           {["‹", "1", "2", "3", "4", "5", "...", "9", "›"].map((p, i) => (
             <button

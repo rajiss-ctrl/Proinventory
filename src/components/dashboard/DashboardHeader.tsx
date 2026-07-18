@@ -1,17 +1,91 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { MdSearch, MdNotifications, MdHelp } from "react-icons/md";
 import { FiMenu } from "react-icons/fi";
 import { useSelector } from "react-redux";
 import { RootState } from "../../app/store";
 import GuestAvatar from "../../assets/img/guest.png";
+import { NotificationService } from "../../services/notification.service";
+import useAppSelector from "../../hooks/useAppSelector";
+import { useNavigate } from "react-router-dom";
+
+// ✅ Define Timeout type to avoid NodeJS namespace issue
+type Timeout = ReturnType<typeof setTimeout>;
 
 interface DashboardHeaderProps {
   onMenuClick: () => void;
+  notificationCount?: number;
+  onNotificationCountChange?: (count: number) => void;
+  onNotificationClick?: () => void;
 }
 
-const DashboardHeader = ({ onMenuClick }: DashboardHeaderProps) => {
+const DashboardHeader = ({ 
+  onMenuClick, 
+  notificationCount = 0,
+  onNotificationCountChange,
+  onNotificationClick,
+}: DashboardHeaderProps) => {
   const [search, setSearch] = useState("");
+  const [localCount, setLocalCount] = useState(notificationCount);
+  // ✅ Remove unused error state
   const authUser = useSelector((s: RootState) => s.auth.user);
+  const companyId = useAppSelector(s => s.auth.profile?.companyId ?? s.auth.user?.companyId) ?? "";
+  const navigate = useNavigate();
+  // ✅ Use the custom Timeout type instead of NodeJS.Timeout
+  const intervalRef = useRef<Timeout | null>(null);
+  const retryCount = useRef(0);
+  const maxRetries = 3;
+
+  // Load notification count with retry logic
+  const loadCount = async () => {
+    if (!companyId) return;
+    
+    try {
+      const count = await NotificationService.getUnreadCount(companyId);
+      setLocalCount(count);
+      if (onNotificationCountChange) {
+        onNotificationCountChange(count);
+      }
+      retryCount.current = 0; // Reset retry count on success
+    } catch (err) {
+      console.error("Failed to load notification count:", err);
+      
+      // Retry with exponential backoff
+      if (retryCount.current < maxRetries) {
+        retryCount.current++;
+        const delay = Math.min(1000 * Math.pow(2, retryCount.current), 10000);
+        console.log(`Retrying in ${delay}ms (attempt ${retryCount.current}/${maxRetries})`);
+        setTimeout(loadCount, delay);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!companyId) return;
+    
+    // Initial load
+    loadCount();
+    
+    // Refresh every 60 seconds instead of 30
+    intervalRef.current = setInterval(loadCount, 60000);
+    
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyId]);
+
+  // Use localCount if notificationCount is not provided
+  const displayCount = notificationCount || localCount;
+
+  const handleNotificationClick = () => {
+    if (onNotificationClick) {
+      onNotificationClick();
+    } else {
+      navigate("/dashboard?tab=notifications");
+    }
+  };
 
   return (
     <header
@@ -21,7 +95,7 @@ const DashboardHeader = ({ onMenuClick }: DashboardHeaderProps) => {
         borderBottom: "1px solid var(--color-border-subtle)",
       }}
     >
-      {/* Hamburger (shifts with sidebar) */}
+      {/* Hamburger */}
       <button
         onClick={onMenuClick}
         className="hidden md:flex w-8 h-8 items-center justify-center rounded-lg transition-colors shrink-0"
@@ -64,7 +138,7 @@ const DashboardHeader = ({ onMenuClick }: DashboardHeaderProps) => {
 
       {/* Right actions */}
       <div className="flex items-center gap-2 ml-auto shrink-0">
-        {/* Notifications */}
+        {/* Notifications with dynamic badge */}
         <button
           className="relative w-9 h-9 flex items-center justify-center rounded-lg transition-colors"
           style={{
@@ -73,14 +147,17 @@ const DashboardHeader = ({ onMenuClick }: DashboardHeaderProps) => {
             border: "1px solid var(--color-border-soft)",
           }}
           aria-label="Notifications"
+          onClick={handleNotificationClick}
         >
           <MdNotifications size={18} />
-          <span
-            className="absolute top-1 right-1 w-4 h-4 flex items-center justify-center text-[9px] font-bold rounded-full"
-            style={{ background: "var(--color-danger)", color: "white" }}
-          >
-            3
-          </span>
+          {displayCount > 0 && (
+            <span
+              className="absolute top-1 right-1 min-w-[18px] h-[18px] flex items-center justify-center text-[10px] font-bold rounded-full px-1"
+              style={{ background: "var(--color-danger)", color: "white" }}
+            >
+              {displayCount > 99 ? '99+' : displayCount}
+            </span>
+          )}
         </button>
 
         {/* Help */}

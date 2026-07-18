@@ -41,6 +41,7 @@ export interface UserPermissions {
   reports:        ModulePermission;
   settings:       ModulePermission;
   users:          ModulePermission;
+  sales: { read: boolean; write: boolean; delete: boolean };
 }
 
 /** Default permissions per role */
@@ -57,6 +58,7 @@ export const DEFAULT_PERMISSIONS: Record<UserRole, UserPermissions> = {
     reports:        { read: true, write: true, delete: true },
     settings:       { read: true, write: true, delete: true },
     users:          { read: true, write: true, delete: true },
+    sales: { read: true, write: true, delete: false },
   },
   company_owner: {
     dashboard:      { read: true },
@@ -70,6 +72,7 @@ export const DEFAULT_PERMISSIONS: Record<UserRole, UserPermissions> = {
     reports:        { read: true, write: true, delete: false },
     settings:       { read: true, write: true, delete: false },
     users:          { read: true, write: true, delete: true },
+    sales: { read: true, write: true, delete: false },
   },
   company_admin: {
     dashboard:      { read: true },
@@ -83,6 +86,7 @@ export const DEFAULT_PERMISSIONS: Record<UserRole, UserPermissions> = {
     reports:        { read: true, write: false, delete: false },
     settings:       { read: true, write: false, delete: false },
     users:          { read: true, write: true, delete: false },
+    sales: { read: true, write: true, delete: false },
   },
   // Guest = same as company_owner (full demo access)
   guest: {
@@ -97,6 +101,7 @@ export const DEFAULT_PERMISSIONS: Record<UserRole, UserPermissions> = {
     reports:        { read: true, write: true, delete: false },
     settings:       { read: true, write: true, delete: false },
     users:          { read: true, write: true, delete: true },
+    sales: { read: true, write: true, delete: false },
   },
   staff: {
     dashboard:      { read: true },
@@ -110,6 +115,7 @@ export const DEFAULT_PERMISSIONS: Record<UserRole, UserPermissions> = {
     reports:        { read: false, write: false, delete: false },
     settings:       { read: false, write: false, delete: false },
     users:          { read: false, write: false, delete: false },
+    sales: { read: true, write: true, delete: false },
   },
 };
 

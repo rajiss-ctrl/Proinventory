@@ -42,10 +42,6 @@ service cloud.firestore {
       return isActiveUser() && userCompanyId() == companyId;
     }
 
-    // ── FIX 1: guest role gets full owner access ──────────────
-    // The old rules only checked "company_owner" but guest users
-    // have role == "company_owner" after seeding, so this works.
-    // We keep the explicit guest check as a safety net.
     function isOwner() {
       return isActiveUser() && (
         userRole() == "company_owner" ||
@@ -65,11 +61,6 @@ service cloud.firestore {
       return isOwner() || isCompanyAdmin();
     }
 
-    // ── FIX 2: safe permission helpers ────────────────────────
-    // Old rules accessed userData().permissions[module].read which
-    // throws if the permissions map is missing or malformed.
-    // New helpers short-circuit on isOwnerOrAdmin() FIRST, then
-    // fall through to the permissions map only for staff.
     function hasModuleRead(module) {
       return isSuperAdmin()
         || isOwnerOrAdmin()
@@ -83,7 +74,8 @@ service cloud.firestore {
         || (module == "customers"      && userData().permissions.customers.read      == true)
         || (module == "reports"        && userData().permissions.reports.read        == true)
         || (module == "settings"       && userData().permissions.settings.read       == true)
-        || (module == "users"          && userData().permissions.users.read          == true);
+        || (module == "users"          && userData().permissions.users.read          == true)
+        || (module == "sales"          && userData().permissions.sales.read          == true);
     }
 
     function hasModuleWrite(module) {
@@ -98,7 +90,8 @@ service cloud.firestore {
         || (module == "customers"      && userData().permissions.customers.write      == true)
         || (module == "reports"        && userData().permissions.reports.write        == true)
         || (module == "settings"       && userData().permissions.settings.write       == true)
-        || (module == "users"          && userData().permissions.users.write          == true);
+        || (module == "users"          && userData().permissions.users.write          == true)
+        || (module == "sales"          && userData().permissions.sales.write          == true);
     }
 
     function hasModuleDelete(module) {
@@ -111,7 +104,8 @@ service cloud.firestore {
         || (module == "stock"          && userData().permissions.stock.delete          == true)
         || (module == "suppliers"      && userData().permissions.suppliers.delete      == true)
         || (module == "customers"      && userData().permissions.customers.delete      == true)
-        || (module == "users"          && userData().permissions.users.delete          == true);
+        || (module == "users"          && userData().permissions.users.delete          == true)
+        || (module == "sales"          && userData().permissions.sales.delete          == true);
     }
 
     function hasStockAdjust() {
@@ -127,7 +121,6 @@ service cloud.firestore {
       allow read: if signedIn() && request.auth.uid == uid;
       allow read: if isSuperAdmin();
 
-      // Self-registration: user creates their own profile.
       allow create: if signedIn()
         && request.auth.uid == uid
         && request.resource.data.uid == request.auth.uid
@@ -135,7 +128,6 @@ service cloud.firestore {
         && request.resource.data.isSuperAdmin == false
         && request.resource.data.role != "super_admin";
 
-      // Owner/admin creating a staff member's profile during invite.
       allow create: if isSuperAdmin()
         || (isOwnerOrAdmin()
             && request.resource.data.uid == uid
@@ -143,14 +135,12 @@ service cloud.firestore {
             && request.resource.data.isSuperAdmin == false
             && request.resource.data.role in ["company_admin", "staff"]);
 
-      // User updates own safe fields
       allow update: if signedIn()
         && request.auth.uid == uid
         && request.resource.data.uid          == resource.data.uid
         && request.resource.data.isSuperAdmin == resource.data.isSuperAdmin
         && request.resource.data.role         != "super_admin";
 
-      // Owner/admin updates company members
       allow update: if isSuperAdmin()
         || (isOwnerOrAdmin() && userCompanyId() == resource.data.companyId);
 
@@ -162,14 +152,10 @@ service cloud.firestore {
     ========================================================= */
     match /companies/{companyId} {
       allow read: if isSuperAdmin() || belongsToCompany(companyId);
-
-      // Allow company creation during registration
       allow create: if isSuperAdmin()
         || (signedIn() && request.resource.data.ownerId == request.auth.uid);
-
       allow update: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwnerOrAdmin());
-
       allow delete: if isSuperAdmin();
     }
 
@@ -205,13 +191,10 @@ service cloud.firestore {
     match /companies/{companyId}/products/{productId} {
       allow read: if isSuperAdmin()
         || (belongsToCompany(companyId) && hasModuleRead("products"));
-
       allow create: if isSuperAdmin()
         || (belongsToCompany(companyId) && hasModuleWrite("products"));
-
       allow update: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwnerOrAdmin());
-
       allow delete: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwner());
     }
@@ -308,7 +291,6 @@ service cloud.firestore {
         || (belongsToCompany(companyId) && isOwner());
     }
 
-    // Transfer items subcollection
     match /companies/{companyId}/transfers/{transferId}/items/{itemId} {
       allow read: if isSuperAdmin()
         || (belongsToCompany(companyId) && hasModuleRead("stock"));
@@ -319,7 +301,6 @@ service cloud.firestore {
 
     /* =========================================================
        STOCK MOVEMENTS  /companies/{companyId}/stockMovements/{id}
-       Append-only audit trail — never edit or delete from client.
     ========================================================= */
     match /companies/{companyId}/stockMovements/{movementId} {
       allow read: if isSuperAdmin()
@@ -328,6 +309,34 @@ service cloud.firestore {
         || (belongsToCompany(companyId) && hasStockAdjust());
       allow update: if false;
       allow delete: if isSuperAdmin();
+    }
+
+    /* =========================================================
+       NOTIFICATIONS  /companies/{companyId}/notifications/{notificationId}
+    ========================================================= */
+    match /companies/{companyId}/notifications/{notificationId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && hasModuleRead("notifications"));
+      allow create: if isSuperAdmin()
+        || (belongsToCompany(companyId) && hasModuleWrite("notifications"));
+      allow update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
+    }
+
+    /* =========================================================
+       ✅ SALES  /companies/{companyId}/sales/{saleId}
+    ========================================================= */
+    match /companies/{companyId}/sales/{saleId} {
+      allow read: if isSuperAdmin()
+        || (belongsToCompany(companyId) && hasModuleRead("sales"));
+      allow create: if isSuperAdmin()
+        || (belongsToCompany(companyId) && hasModuleWrite("sales"));
+      allow update: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwnerOrAdmin());
+      allow delete: if isSuperAdmin()
+        || (belongsToCompany(companyId) && isOwner());
     }
 
     /* =========================================================
@@ -341,7 +350,6 @@ service cloud.firestore {
       allow delete: if isSuperAdmin()
         || (belongsToCompany(companyId) && isOwner());
 
-      // 🚨 FIX FOR TRANSFERS INVENTORY READ/WRITE PERMISSIONS 🚨
       match /inventory/{inventoryId} {
         allow read: if isSuperAdmin()
           || (belongsToCompany(companyId) && hasModuleRead("stock"));

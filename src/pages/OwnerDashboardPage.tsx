@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useLocation } from "react-router-dom";
 import {
   MdDashboard, MdPeople, MdCreditCard,
@@ -6,6 +6,7 @@ import {
   MdSwapHoriz, MdAdd, MdBlock, MdCheckCircle,
   MdDelete, MdClose, MdRefresh,
   MdAttachMoney, MdRemoveShoppingCart, MdShoppingCart,
+  MdNotifications,
 } from "react-icons/md";
 import { FaCheck } from "react-icons/fa";
 import { FiTrash2 } from "react-icons/fi";
@@ -21,6 +22,7 @@ import { CategoryService }      from "../services/category.service";
 import { InventoryService }     from "../services/inventory.service";
 import { TransferService }      from "../services/transfer.service";
 import { StockMovementService } from "../services/stock-movement.service";
+import { NotificationService }  from "../services/notification.service"; // ✅ Added import
 
 import TrialBanner   from "../components/ui/TrialBanner";
 import UpgradePrompt from "../components/ui/UpgradePrompt";
@@ -39,8 +41,10 @@ import {
   StatCard, InventoryTurnoverChart, CategoryDonutChart,
   LowStockPanel, RecentActivityPanel, ProductsTable,
 } from "../components/dashboard/DashboardWidgets";
+import { QueryDocumentSnapshot } from "firebase/firestore";
+import { SaleModal } from "../components/dashboard/SaleModal";
 
-type OTab = "dashboard"|"staff"|"warehouses"|"categories"|"transfers"|"movements"|"plan";
+type OTab = "dashboard" | "staff" | "warehouses" | "categories" | "transfers" | "movements" | "plan" | "notifications";
 type DView = "dashboard"|"add-product";
 type AddStaffForm = {
   displayName: string;
@@ -219,12 +223,9 @@ const OwnerDashboardPage = () => {
     assignedId?: string, 
     isDefault?: boolean
   ) => {
-    // Owners and Admins can see absolutely every warehouse (essential for transfers!)
     if (role === 'company_owner' || role === 'company_admin') {
       return true;
     }
-    
-    // Staff can ONLY see their assigned warehouse or the fallback default
     return isDefault || warehouseId === 'main_warehouse' || warehouseId === assignedId;
   };
 
@@ -262,7 +263,17 @@ const OwnerDashboardPage = () => {
   const [transfers,  setTransfers]  = useState<Transfer[]>([]);
   const [movements,  setMovements]  = useState<StockMovement[]>([]);
   const [trfLoading, setTrfLoading] = useState(false);
-  const [transferAlerts, setTransferAlerts] = useState(0);
+
+  // Pagination state for movements (stock log)
+  const [movementPageSize] = useState(20);
+  const [movementTotalCount, setMovementTotalCount] = useState(0);
+  const [movementHasMore, setMovementHasMore] = useState(false);
+  const [movementLastVisible, setMovementLastVisible] = useState<QueryDocumentSnapshot | null>(null);
+  const [movementLoadingMore, setMovementLoadingMore] = useState(false);
+  const [allMovementsLoaded, setAllMovementsLoaded] = useState(false);
+  const [movementTypeFilter, setMovementTypeFilter] = useState<string>("all");
+
+  
   const [transferMessages, setTransferMessages] = useState(0);
   const [transferForm, setTransferForm] = useState({
     fromWarehouseId: "",
@@ -273,6 +284,34 @@ const OwnerDashboardPage = () => {
   });
   const [transferRequestError, setTransferRequestError] = useState("");
   const [transferRequestLoading, setTransferRequestLoading] = useState(false);
+
+  // Pagination state for transfers
+  const [transferPageSize] = useState(10);
+  const [transferTotalCount, setTransferTotalCount] = useState(0);
+  const [transferHasMore, setTransferHasMore] = useState(false);
+  const [transferLastVisible, setTransferLastVisible] = useState<any>(null);
+  const [transferStatusFilter, setTransferStatusFilter] = useState<string>("all");
+  const [transferLoadingMore, setTransferLoadingMore] = useState(false);
+  const [allTransfersLoaded, setAllTransfersLoaded] = useState(false);
+
+
+  // Notifications state
+const [notifications, setNotifications] = useState<any[]>([]);
+const [notificationsLoading, setNotificationsLoading] = useState(false);
+const [notificationPageSize] = useState(20);
+const [notificationHasMore, setNotificationHasMore] = useState(false);
+const [notificationLastVisible, setNotificationLastVisible] = useState<any>(null);
+const [notificationLoadingMore, setNotificationLoadingMore] = useState(false);
+const [allNotificationsLoaded, setAllNotificationsLoaded] = useState(false);
+const [selectedProductForSale, setSelectedProductForSale] = useState<Product | null>(null);
+  // Notification state
+  const [notificationCount, setNotificationCount] = useState(0);
+
+
+
+
+  // Refs to prevent infinite loops
+  const isLoadingRef = useRef(false);
 
   useEffect(() => {
     const tabParam = new URLSearchParams(location.search).get("tab");
@@ -330,6 +369,21 @@ const OwnerDashboardPage = () => {
   const lowStock   = displayedProducts.filter(p=>((p.stockQuantity ?? p.product_Qty ?? 0)>0)&&((p.stockQuantity ?? p.product_Qty ?? 0)<=10)).length;
   const editItem   = products.find(p=>p.id===editId);
 
+  // Load notifications with less frequency
+const loadNotifications = useCallback(async (cid = companyId) => {
+  if (!cid) return;
+  try {
+    const count = await NotificationService.getUnreadCount(cid);
+    setNotificationCount(count);
+  } catch (error) {
+    console.error("Failed to load notifications:", error);
+    // Don't update count on error - keep existing value
+  }
+}, [companyId]);
+
+
+ 
+
   /* ── Data loaders ── */
   const loadStaff = useCallback(async (cid = companyId) => {
     if (!cid) return;
@@ -363,7 +417,6 @@ const OwnerDashboardPage = () => {
     try {
       const list = await WarehouseService.list(cid);
 
-      // Filter using canViewWarehouse:
       const scopedList = list.filter((wh) =>
         canViewWarehouse(wh.id, profile?.role, assignedWarehouseId, wh.isDefault)
       );
@@ -378,11 +431,9 @@ const OwnerDashboardPage = () => {
           .sort((a, b) => a.productName.localeCompare(b.productName));
       });
 
-      // Update both states
       setWarehouses(sorted);
       setWarehouseInventory(inventoryMap);
       
-      // If we have a preview warehouse, ensure it's selected
       if (previewWarehouseId && sorted.some(w => w.id === previewWarehouseId)) {
         setSelectedWarehouseId(previewWarehouseId);
       }
@@ -403,37 +454,231 @@ const OwnerDashboardPage = () => {
     }
   }, [companyId]);
 
-  const loadTransfers = useCallback(async (cid = companyId) => {
-    if (!cid) return;
+  const loadTransfers = useCallback(async (cid = companyId, loadMore = false) => {
+  if (isLoadingRef.current) return;
+  isLoadingRef.current = true;
+  
+  if (!cid) return;
+  
+  if (loadMore) {
+    setTransferLoadingMore(true);
+  } else {
     setTrfLoading(true);
-    try {
-      const [t, m] = await Promise.all([
-        TransferService.list(cid),
-        StockMovementService.listRecent(cid, 30),
-      ]);
+    // Removed setTransferPage(1);
+    setAllTransfersLoaded(false);
+  }
+  
+  try {
+    const lastDoc = loadMore ? transferLastVisible : null;
+    const result = await TransferService.listPaginated(
+      cid,
+      transferPageSize,
+      lastDoc,
+      transferStatusFilter === "all" ? undefined : transferStatusFilter
+    );
 
-      const scopedTransfers = hasWarehouseScope && assignedWarehouseId
-        ? t.filter((transfer) =>
-            transfer.fromWarehouseId === assignedWarehouseId ||
-            transfer.toWarehouseId === assignedWarehouseId
-          )
-        : t;
+    const scopedTransfers = hasWarehouseScope && assignedWarehouseId
+      ? result.transfers.filter((transfer) =>
+          transfer.fromWarehouseId === assignedWarehouseId ||
+          transfer.toWarehouseId === assignedWarehouseId
+        )
+      : result.transfers;
 
-      const pending = scopedTransfers.filter((transfer) =>
-        transfer.status === "draft" ||
-        transfer.status === "pending" ||
-        transfer.status === "in_transit"
-      ).length;
-      const received = scopedTransfers.filter((transfer) => transfer.status === "completed").length;
+    const movements = await StockMovementService.listRecent(cid, 30);
 
+    if (loadMore) {
+      setTransfers(prev => [...prev, ...scopedTransfers]);
+    } else {
       setTransfers(scopedTransfers);
-      setMovements(m);
-      setTransferAlerts(pending);
-      setTransferMessages(received);
-    } finally {
+    }
+
+    setMovements(movements);
+    setTransferTotalCount(result.totalCount);
+    setTransferHasMore(result.hasMore);
+    setTransferLastVisible(result.lastVisible);
+    setAllTransfersLoaded(!result.hasMore);
+    
+   
+    const received = scopedTransfers.filter((transfer) => transfer.status === "completed").length;
+
+    // Removed setTransferAlerts(pending);
+    setTransferMessages(received);
+  } catch (error) {
+    console.error("Failed to load transfers:", error);
+  } finally {
+    if (loadMore) {
+      setTransferLoadingMore(false);
+    } else {
       setTrfLoading(false);
     }
-  }, [assignedWarehouseId, companyId, hasWarehouseScope]);
+    isLoadingRef.current = false;
+  }
+}, [companyId, transferPageSize, transferLastVisible, transferStatusFilter, hasWarehouseScope, assignedWarehouseId]);
+
+  const loadMovements = useCallback(async (cid = companyId, loadMore = false) => {
+    if (isLoadingRef.current) return;
+    isLoadingRef.current = true;
+    
+    if (!cid) return;
+    
+    if (loadMore) {
+      setMovementLoadingMore(true);
+    } else {
+      setTrfLoading(true);
+      setAllMovementsLoaded(false);
+    }
+    
+    try {
+      const lastDoc = loadMore ? movementLastVisible : null;
+      const result = await StockMovementService.listPaginated(
+        cid,
+        movementPageSize,
+        lastDoc,
+        movementTypeFilter === "all" ? undefined : movementTypeFilter
+      );
+
+      if (loadMore) {
+        setMovements(prev => [...prev, ...result.movements]);
+      } else {
+        setMovements(result.movements);
+      }
+
+      setMovementTotalCount(result.totalCount);
+      setMovementHasMore(result.hasMore);
+      setMovementLastVisible(result.lastVisible);
+      setAllMovementsLoaded(!result.hasMore);
+    } catch (error) {
+      console.error("Failed to load movements:", error);
+    } finally {
+      if (loadMore) {
+        setMovementLoadingMore(false);
+      } else {
+        setTrfLoading(false);
+      }
+      isLoadingRef.current = false;
+    }
+  }, [companyId, movementPageSize, movementLastVisible, movementTypeFilter]);
+
+
+
+  // ============================================================
+  // SALE HANDLERS
+  // ============================================================
+  const handleSellProduct = (product: Product) => {
+    // Check if product has stock
+    if ((product.product_Qty || 0) <= 0) {
+      alert("This product is out of stock and cannot be sold.");
+      return;
+    }
+    setSelectedProductForSale(product);
+  };
+
+  const loadNotificationsList = useCallback(async (cid = companyId, loadMore = false) => {
+  if (!cid) return;
+  
+  if (loadMore) {
+    setNotificationLoadingMore(true);
+  } else {
+    setNotificationsLoading(true);
+    setAllNotificationsLoaded(false);
+  }
+  
+  try {
+    const lastDoc = loadMore ? notificationLastVisible : null;
+    const result = await NotificationService.list(
+      cid,
+      notificationPageSize,
+      lastDoc,
+      'all'
+    );
+
+    if (loadMore) {
+      setNotifications(prev => [...prev, ...result.notifications]);
+    } else {
+      setNotifications(result.notifications);
+    }
+
+    setNotificationHasMore(result.hasMore);
+    setNotificationLastVisible(result.lastVisible);
+    setAllNotificationsLoaded(!result.hasMore);
+  } catch (error) {
+    console.error("Failed to load notifications:", error);
+  } finally {
+    if (loadMore) {
+      setNotificationLoadingMore(false);
+    } else {
+      setNotificationsLoading(false);
+    }
+  }
+}, [companyId, notificationPageSize, notificationLastVisible]);
+
+
+  // ============================================================
+  // REFRESH ALL DATA FUNCTION
+  // ============================================================
+  const refreshAllData = useCallback(async () => {
+    if (!companyId) return;
+    
+    try {
+      // Reload warehouses and inventory
+      await loadWarehouses();
+      
+      // Reload transfers
+      await loadTransfers();
+      
+      // Reload movements
+      await loadMovements();
+      
+      // Reload notifications
+      await loadNotifications();
+      
+      // If notifications tab is open, reload the list
+      if (oTab === "notifications") {
+        await loadNotificationsList(companyId, false);
+      }
+      
+      // Force a re-render of the products preview
+      if (previewWarehouseId) {
+        setSelectedWarehouseId(() => previewWarehouseId);
+      }
+      
+      console.log("✅ All data refreshed after sale");
+    } catch (error) {
+      console.error("Failed to refresh data:", error);
+    }
+  }, [companyId, loadWarehouses, loadTransfers, loadMovements, loadNotifications, loadNotificationsList, oTab, previewWarehouseId]);
+
+
+
+const markNotificationAsRead = async (notificationId: string) => {
+  try {
+    await NotificationService.markAsRead(companyId, notificationId);
+    // Update local state
+    setNotifications(prev => 
+      prev.map(n => 
+        n.id === notificationId ? { ...n, status: 'read' } : n
+      )
+    );
+    // Refresh count
+    const count = await NotificationService.getUnreadCount(companyId);
+    setNotificationCount(count);
+  } catch (error) {
+    console.error("Failed to mark notification as read:", error);
+  }
+};
+
+const markAllNotificationsAsRead = async () => {
+  try {
+    await NotificationService.markAllAsRead(companyId);
+    // Update local state
+    setNotifications(prev => 
+      prev.map(n => ({ ...n, status: 'read' }))
+    );
+    setNotificationCount(0);
+  } catch (error) {
+    console.error("Failed to mark all notifications as read:", error);
+  }
+};
 
 
   const toDate = (timestamp: Date | FirebaseTimestamp | undefined): Date => {
@@ -445,6 +690,20 @@ const OwnerDashboardPage = () => {
     return new Date();
   };
 
+    // Helper function to format time ago
+const getTimeAgo = (date: Date): string => {
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+};
   // Load warehouses when dashboard is active (so products preview works)
   useEffect(() => {
     if (oTab === "dashboard" && companyId) {
@@ -452,21 +711,33 @@ const OwnerDashboardPage = () => {
     }
   }, [oTab, companyId, loadWarehouses]);
 
-  // Load warehouses on initial mount for dashboard preview
+  // ✅ MAIN LOADER - handles all tab switching
   useEffect(() => {
-    if (companyId) {
-      loadWarehouses();
-    }
-  }, [companyId, loadWarehouses]);
-
+  if (!companyId) return;
   
-  useEffect(() => {
-    if (!companyId) return;
-    if (oTab === "staff") loadStaff();
-    if (oTab === "warehouses") loadWarehouses();
-    if (oTab === "categories") loadCategories();
-    if (oTab === "transfers" || oTab === "movements") loadTransfers();
-  }, [oTab, companyId, loadStaff, loadWarehouses, loadCategories, loadTransfers]);
+  console.log(`🔄 Switching to tab: ${oTab}`);
+  
+  if (oTab === "staff") loadStaff();
+  if (oTab === "warehouses") loadWarehouses();
+  if (oTab === "categories") loadCategories();
+  if (oTab === "transfers") {
+    loadTransfers();
+  }
+  if (oTab === "movements") {
+    loadMovements();
+  }
+  if (oTab === "notifications") {
+    // ✅ Force reload notifications when tab is opened
+    setNotificationLastVisible(null);
+    setAllNotificationsLoaded(false);
+    loadNotificationsList(companyId, false);
+  }
+  
+  // Always load notification count
+  loadNotifications();
+  
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [oTab, companyId]);
 
   useEffect(() => {
     if (!hasWarehouseScope || !assignedWarehouseId || transferForm.fromWarehouseId) return;
@@ -536,10 +807,8 @@ const OwnerDashboardPage = () => {
   const refreshProductsPreview = useCallback(async () => {
     if (!companyId) return;
     
-    // Reload warehouses to get latest inventory
     await loadWarehouses();
     
-    // If we have a preview warehouse, force it to re-select
     if (previewWarehouseId) {
       setSelectedWarehouseId(previewWarehouseId);
     }
@@ -559,104 +828,119 @@ const OwnerDashboardPage = () => {
   const availableTransferQty = Math.max(1, selectedInventoryItem?.quantity ?? 0);
 
   const requestTransfer = async(e: React.FormEvent) => {
-    e.preventDefault();
-    setTransferRequestError("");
+  e.preventDefault();
+  setTransferRequestError("");
 
-    if (!companyId) return;
-    if (!transferForm.fromWarehouseId || !transferForm.toWarehouseId) {
-      setTransferRequestError("Please choose both source and destination warehouses.");
-      return;
-    }
-    if (transferForm.fromWarehouseId === transferForm.toWarehouseId) {
-      setTransferRequestError("The destination warehouse must be different from the source warehouse.");
-      return;
-    }
+  if (!companyId) return;
+  if (!transferForm.fromWarehouseId || !transferForm.toWarehouseId) {
+    setTransferRequestError("Please choose both source and destination warehouses.");
+    return;
+  }
+  if (transferForm.fromWarehouseId === transferForm.toWarehouseId) {
+    setTransferRequestError("The destination warehouse must be different from the source warehouse.");
+    return;
+  }
+  
+  const selectedProduct = products.find(p => p.id === transferForm.productId);
+  if (!selectedProduct) {
+    setTransferRequestError("Please select a valid product.");
+    return;
+  }
+
+  const inventoryItem = transferInventoryItems.find(
+    (item) => item.productId === transferForm.productId
+  );
+  
+  if (!inventoryItem || inventoryItem.quantity <= 0) {
+    setTransferRequestError("The selected product has no available quantity in the source warehouse.");
+    return;
+  }
+
+  const quantity = Math.min(
+    Number(transferForm.quantity) || 1,
+    inventoryItem.quantity
+  );
+
+  if (quantity <= 0) {
+    setTransferRequestError("Quantity must be greater than 0.");
+    return;
+  }
+
+  setTransferRequestLoading(true);
+  try {
+    console.log("📦 Creating transfer with notes:", transferForm.notes);
     
-    // Find the selected product
-    const selectedProduct = products.find(p => p.id === transferForm.productId);
-    if (!selectedProduct) {
-      setTransferRequestError("Please select a valid product.");
-      return;
-    }
-
-    // Find inventory item in source warehouse
-    const inventoryItem = transferInventoryItems.find(
-      (item) => item.productId === transferForm.productId
-    );
+    await TransferService.create({
+      companyId,
+      createdBy: profile?.uid ?? "",
+      fromWarehouseId: transferForm.fromWarehouseId,
+      fromWarehouseName: warehouses.find((w) => w.id === transferForm.fromWarehouseId)?.name ?? transferForm.fromWarehouseId,
+      toWarehouseId: transferForm.toWarehouseId,
+      toWarehouseName: warehouses.find((w) => w.id === transferForm.toWarehouseId)?.name ?? transferForm.toWarehouseId,
+      items: [{
+        productId: selectedProduct.id,
+        productName: selectedProduct.name,
+        sku: selectedProduct.sku,
+        quantity,
+      }],
+      notes: transferForm.notes,
+    });
     
-    if (!inventoryItem || inventoryItem.quantity <= 0) {
-      setTransferRequestError("The selected product has no available quantity in the source warehouse.");
-      return;
-    }
-
-    const quantity = Math.min(
-      Number(transferForm.quantity) || 1,
-      inventoryItem.quantity
-    );
-
-    if (quantity <= 0) {
-      setTransferRequestError("Quantity must be greater than 0.");
-      return;
-    }
-
-    setTransferRequestLoading(true);
-    try {
-      await TransferService.create({
-        companyId,
-        createdBy: profile?.uid ?? "",
-        fromWarehouseId: transferForm.fromWarehouseId,
-        fromWarehouseName: warehouses.find((w) => w.id === transferForm.fromWarehouseId)?.name ?? transferForm.fromWarehouseId,
-        toWarehouseId: transferForm.toWarehouseId,
-        toWarehouseName: warehouses.find((w) => w.id === transferForm.toWarehouseId)?.name ?? transferForm.toWarehouseId,
-        items: [{
-          productId: selectedProduct.id,
-          productName: selectedProduct.name,
-          sku: selectedProduct.sku,
-          quantity,
-        }],
-        notes: transferForm.notes,
-      });
-      
-      // Reset form
-      setTransferForm({ 
-        fromWarehouseId: "", 
-        toWarehouseId: "", 
-        productId: "", 
-        quantity: 1, 
-        notes: "" 
-      });
-      
-      // Load transfers and refresh products preview
-      await Promise.all([
-        loadTransfers(),
-        refreshProductsPreview()
-      ]);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Unable to create transfer request.";
-      setTransferRequestError(message.replace(/^Firebase:\s*/i, ""));
-    } finally {
-      setTransferRequestLoading(false);
-    }
-  };
+    console.log("✅ Transfer created successfully!");
+    
+    // Reset form
+    setTransferForm({ 
+      fromWarehouseId: "", 
+      toWarehouseId: "", 
+      productId: "", 
+      quantity: 1, 
+      notes: "" 
+    });
+    
+    // ✅ IMPORTANT: Refresh ALL data after transfer
+    await Promise.all([
+      loadTransfers(),
+      refreshProductsPreview(),
+      // ✅ Refresh notifications count
+      loadNotifications(),
+      // ✅ If notifications tab is open, refresh the list
+      oTab === "notifications" ? loadNotificationsList(companyId, false) : Promise.resolve()
+    ]);
+    
+    // ✅ Show success message
+    console.log("✅ All data refreshed after transfer");
+    
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unable to create transfer request.";
+    setTransferRequestError(message.replace(/^Firebase:\s*/i, ""));
+  } finally {
+    setTransferRequestLoading(false);
+  }
+};
 
   const updateTransfer = async(id: string, status: Transfer["status"]) => {
-    try {
-      if (status === "completed") {
-        await TransferService.confirmReceipt(companyId, id, profile?.uid ?? "", assignedWarehouseId);
-      } else {
-        await TransferService.updateStatus(companyId, id, status);
-      }
-      
-      // Load transfers and refresh products preview
-      await Promise.all([
-        loadTransfers(),
-        refreshProductsPreview()
-      ]);
-    } catch (error) {
-      console.error("Failed to update transfer:", error);
-      // Show error to user
+  try {
+    if (status === "completed") {
+      await TransferService.confirmReceipt(companyId, id, profile?.uid ?? "", assignedWarehouseId);
+    } else {
+      await TransferService.updateStatus(companyId, id, status);
     }
-  };
+    
+    // ✅ Refresh ALL data after transfer update
+    await Promise.all([
+      loadTransfers(),
+      refreshProductsPreview(),
+      // ✅ Refresh notifications count
+      loadNotifications(),
+      // ✅ If notifications tab is open, refresh the list
+      oTab === "notifications" ? loadNotificationsList(companyId, false) : Promise.resolve()
+    ]);
+    
+    console.log("✅ All data refreshed after transfer update");
+  } catch (error) {
+    console.error("Failed to update transfer:", error);
+  }
+};
 
   const canCreateTransfer = isOwner || hasWarehouseScope;
 
@@ -665,31 +949,40 @@ const OwnerDashboardPage = () => {
     await SubscriptionService.upgrade(companyId,plan);
   };
 
-  const TABS: {id:OTab;icon:React.ReactNode;label:string}[] = [
-    {id:"dashboard",  icon:<MdDashboard size={15}/>,  label:"Dashboard"},
-    ...(isOwner ? [{id:"staff" as OTab, icon:<MdPeople size={15}/>, label:"Staff"}] : []),
-    {id:"warehouses", icon:<MdWarehouse size={15}/>,  label:"Warehouses"},
-    {id:"categories", icon:<MdCategory size={15}/>,   label:"Categories"},
-    {id:"transfers",  icon:<MdSwapHoriz size={15}/>,  label:"Transfers"},
-    {id:"movements",  icon:<MdInventory2 size={15}/>, label:"Stock Log"},
-    ...(isOwner ? [{id:"plan" as OTab, icon:<MdCreditCard size={15}/>, label:"Subscription"}] : []),
-  ];
+  const TABS: { id: OTab; icon: React.ReactNode; label: string }[] = [
+  { id: "dashboard", icon: <MdDashboard size={15} />, label: "Dashboard" },
+  ...(isOwner ? [{ id: "staff" as OTab, icon: <MdPeople size={15} />, label: "Staff" }] : []),
+  { id: "warehouses", icon: <MdWarehouse size={15} />, label: "Warehouses" },
+  { id: "categories", icon: <MdCategory size={15} />, label: "Categories" },
+  { id: "transfers", icon: <MdSwapHoriz size={15} />, label: "Transfers" },
+  { id: "movements", icon: <MdInventory2 size={15} />, label: "Stock Log" },
+  { id: "notifications", icon: <MdNotifications size={15} />, label: "Notifications" }, // ✅ Added
+  ...(isOwner ? [{ id: "plan" as OTab, icon: <MdCreditCard size={15} />, label: "Subscription" }] : []),
+];
 
-  // ============================================================
-  // RETURN STATEMENT - All variables must be defined above this
-  // ============================================================
   return (
     <div className="min-h-screen" style={{ background:"var(--color-bg-app)" }}>
-      <DashboardSidebar
-        onNewItem={()=>{ setOTab("dashboard"); setDView("add-product"); }}
-        collapsed={sideCol}
-        onToggleCollapse={()=>setSideCol(p=>!p)}
-        activeView={dView==="add-product"?"add-product":"dashboard"}
-        alertCount={transferAlerts}
-        messageCount={transferMessages}
-        onAlertsClick={() => setOTab("transfers")}
+    <DashboardSidebar
+      onNewItem={() => { setOTab("dashboard"); setDView("add-product"); }}
+      collapsed={sideCol}
+      onToggleCollapse={() => setSideCol(p => !p)}
+      activeView={dView === "add-product" ? "add-product" : "dashboard"}
+      notificationCount={notificationCount}
+      messageCount={transferMessages}
+      onAlertsClick={() => {
+        setOTab("notifications");
+        window.history.pushState(null, "", "?tab=notifications");
+      }}
+    />
+      <DashboardHeader 
+        onMenuClick={() => setSideCol(p => !p)}
+        notificationCount={notificationCount}
+        onNotificationClick={() => {
+          setOTab("notifications");
+          // Also update URL
+          window.history.pushState(null, "", "?tab=notifications");
+        }}
       />
-      <DashboardHeader onMenuClick={()=>setSideCol(p=>!p)}/>
 
       <main className="transition-all duration-300 pt-14 min-h-screen"
         style={{ marginLeft:`${sideW}px` }}>
@@ -772,394 +1065,388 @@ const OwnerDashboardPage = () => {
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   <LowStockPanel/><RecentActivityPanel/>
                 </div>
-                <ProductsTable onEdit={id=>setEditId(id)} onAdd={()=>setDView("add-product")} productsOverride={displayedProducts}/>
+                <ProductsTable onEdit={id=>setEditId(id)} onAdd={()=>setDView("add-product")} onSell={handleSellProduct} productsOverride={displayedProducts}/>
               </div>
         )}
 
         {/* ══ STAFF TAB ══ */}
-{oTab === "staff" && (
-  !hasAccess ? <UpgradePrompt /> :
-  <div className="p-5">
-    <div className="flex items-center justify-between mb-5">
-      <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>Staff Management</h1>
-      <div className="flex gap-2">
-        <button onClick={() => loadStaff()} className="flex items-center gap-1 px-3 py-2 rounded-lg text-xs"
-          style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-soft)" }}>
-          <MdRefresh size={14} /> Refresh
-        </button>
-        <button onClick={() => setShowAddStaff(true)} className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold"
-          style={{ background: "var(--color-brand-primary)", color: "white" }}>
-          <MdAdd size={16} /> Add Staff
-        </button>
-      </div>
-    </div>
-    {staffError && (
-      <div className="mb-3 px-4 py-2 rounded-xl text-xs" style={{ background: "var(--color-danger-soft)", color: "var(--color-danger)" }}>
-        {staffError} <button className="underline ml-2" onClick={() => loadStaff()}>Retry</button>
-      </div>
-    )}
-    <Panel>
-      <table className="w-full text-xs">
-        <thead>
-          <tr style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
-            {["Name", "Email", "Role", "Warehouse", "Status", "Actions"].map(h => <TH key={h} h={h} />)}
-          </tr>
-        </thead>
-        <tbody>
-          {staffLoading ? <Spinner colSpan={6} />
-            : staff.length === 0
-              ? <tr><td colSpan={6} className="text-center py-10" style={{ color: "var(--color-text-faint)" }}>
-                  No staff yet.{" "}
-                  <button onClick={() => setShowAddStaff(true)} className="underline" style={{ color: "var(--color-brand-primary-soft)" }}>Add first member</button>
-                </td></tr>
-              : staff.map(u => (
-                <tr key={u.uid} style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
-                  onMouseEnter={e => (e.currentTarget.style.background = "var(--color-surface-2)")}
-                  onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
-                  <td className="px-4 py-3 font-medium" style={{ color: "var(--color-text-primary)" }}>{u.displayName || "—"}</td>
-                  <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>{u.email}</td>
-                  <td className="px-4 py-3">
-                    <select value={u.role} onChange={e => updateRole(u.uid, e.target.value as UserRole)}
-                      className="rounded-lg px-2 py-1 text-xs outline-none"
-                      style={{ background: "var(--color-surface-3)", color: "var(--color-text-secondary)", border: "1px solid var(--color-border-soft)" }}>
-                      {STAFF_ROLES.map(r => <option key={r} value={r}>{r.replace("_", " ")}</option>)}
-                    </select>
-                  </td>
-                  <td className="px-4 py-3">
-                    <select value={u.assignedWarehouseId ?? ""} onChange={e => updateWarehouseAssignment(u.uid, e.target.value || undefined)}
-                      className="rounded-lg px-2 py-1 text-xs outline-none"
-                      style={{ background: "var(--color-surface-3)", color: "var(--color-text-secondary)", border: "1px solid var(--color-border-soft)" }}>
-                      <option value="">No warehouse</option>
-                      {warehouses.map((warehouse) => (
-                        <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize"
-                      style={{ background: u.status === "active" ? "var(--color-stock-in-soft)" : "var(--color-danger-soft)", color: u.status === "active" ? "var(--color-stock-in)" : "var(--color-danger)" }}>
-                      {u.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex gap-2">
-                      <button onClick={() => toggleStatus(u.uid, u.status)} className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:opacity-70"
-                        style={{ background: "var(--color-surface-3)", color: u.status === "active" ? "var(--color-warning)" : "var(--color-success)" }}
-                        title={u.status === "active" ? "Deactivate user" : "Activate user"}>
-                        {u.status === "active" ? <MdBlock size={13} /> : <MdCheckCircle size={13} />}
-                      </button>
-                      {/* 👇 UPDATED DELETE BUTTON WITH CONFIRMATION */}
-                      <button 
-                        onClick={() => {
-                          if (window.confirm(`⚠️ Remove "${u.displayName || u.email}"?\n\nThis will permanently remove this staff member from the company. They will no longer have access to this account.\n\nThis action cannot be undone.`)) {
-                            removeStaff(u.uid);
-                          }
-                        }} 
-                        className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:bg-red-500/20"
-                        style={{ background: "var(--color-danger-soft)", color: "var(--color-danger)" }}
-                        title="Remove staff member"
-                      >
-                        <MdDelete size={13} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-        </tbody>
-      </table>
-    </Panel>
-  </div>
-)}
-
-   {/* ══ WAREHOUSES TAB ══ */}
-{oTab === "warehouses" && (
-  !hasAccess ? <UpgradePrompt /> :
-  <div className="p-5">
-    <div className="flex items-center justify-between mb-5">
-      <div>
-        <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>Warehouses</h1>
-        <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>
-          Manage your warehouse locations and inventory
-        </p>
-      </div>
-      {isOwner && (
-        <button 
-          onClick={() => setShowAddWh(p => !p)} 
-          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold transition-all hover:opacity-80"
-          style={{ background: "var(--color-brand-primary)", color: "white" }}
-        >
-          <MdAdd size={16} /> {showAddWh ? "Cancel" : "Add Warehouse"}
-        </button>
-      )}
-    </div>
-
-    {/* Add Warehouse Form - Only visible to Owner */}
-    {showAddWh && isOwner && (
-      <form onSubmit={addWarehouse} className="mb-5 rounded-xl p-4"
-        style={{ background: "var(--color-surface-1)", border: "1px solid var(--color-border-soft)" }}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <input 
-            placeholder="Warehouse Name*" 
-            required
-            value={whForm.name} 
-            onChange={e => setWhForm(f => ({ ...f, name: e.target.value }))} 
-            style={S} 
-          />
-          <input 
-            placeholder="Code e.g. WH-001*" 
-            required
-            value={whForm.code} 
-            onChange={e => setWhForm(f => ({ ...f, code: e.target.value }))} 
-            style={S} 
-          />
-          <input 
-            placeholder="Address" 
-            value={whForm.address} 
-            onChange={e => setWhForm(f => ({ ...f, address: e.target.value }))} 
-            style={S} 
-          />
-          <input 
-            placeholder="City" 
-            value={whForm.city} 
-            onChange={e => setWhForm(f => ({ ...f, city: e.target.value }))} 
-            style={S} 
-          />
-          <input 
-            placeholder="Country" 
-            value={whForm.country} 
-            onChange={e => setWhForm(f => ({ ...f, country: e.target.value }))} 
-            style={S} 
-          />
-          <button 
-            type="submit" 
-            className="sm:col-span-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-80"
-            style={{ background: "var(--color-brand-primary)", color: "white" }}
-          >
-            Create Warehouse
-          </button>
-        </div>
-      </form>
-    )}
-
-    {/* Loading State */}
-    {whLoading ? (
-      <div className="flex items-center justify-center py-12">
-        <div className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin"
-          style={{ borderColor: "var(--color-brand-primary)" }} />
-      </div>
-    ) : warehouses.length === 0 ? (
-      <div className="rounded-xl p-8 text-center"
-        style={{ background: "var(--color-surface-1)", border: "1px dashed var(--color-border-soft)" }}>
-        <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
-          No warehouses yet
-        </p>
-        <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
-          {isOwner ? "Create your first warehouse to start managing inventory" : "Contact your company owner to set up warehouses"}
-        </p>
-      </div>
-    ) : (
-      <div className="grid grid-cols-1 gap-4">
-        {warehouses.map(warehouse => {
-          const inventoryItems = warehouseInventory[warehouse.id] ?? [];
-          const totalItems = inventoryItems.reduce((sum, item) => sum + (item.quantity || 0), 0);
-          const uniqueProducts = inventoryItems.length;
-          const isDefault = warehouse.isDefault || warehouse.id === "main_warehouse";
-          const canDelete = isOwner && !isDefault;
-
-          return (
-            <div key={warehouse.id} className="rounded-xl overflow-hidden"
-              style={{ 
-                background: "var(--color-surface-1)", 
-                border: `1px solid ${isDefault ? "var(--color-border-brand)" : "var(--color-border-soft)"}` 
-              }}>
-              
-              {/* Warehouse Header */}
-              <div className="flex flex-wrap items-center justify-between gap-2 p-4"
-                style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
-                    style={{ background: "var(--color-surface-3)" }}>
-                    <MdWarehouse size={20} style={{ color: "var(--color-brand-primary-soft)" }} />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
-                        {warehouse.name}
-                      </p>
-                      {isDefault && (
-                        <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
-                          style={{ background: "var(--color-stock-in-soft)", color: "var(--color-stock-in)" }}>
-                          Default
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                      {warehouse.code} • {[warehouse.address, warehouse.city, warehouse.country].filter(Boolean).join(", ") || "No address set"}
-                    </p>
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-4 flex-wrap">
-                  <div className="text-right">
-                    <p className="text-xs font-semibold" style={{ color: "var(--color-text-primary)" }}>
-                      {totalItems}
-                    </p>
-                    <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>Total Stock</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xs font-semibold" style={{ color: "var(--color-text-primary)" }}>
-                      {uniqueProducts}
-                    </p>
-                    <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>Products</p>
-                  </div>
-                    {canDelete && (
-                    <button 
-                      onClick={() => {
-                        if (window.confirm(`⚠️ Delete "${warehouse.name}"?\n\nThis will permanently remove this warehouse and all its inventory records.\n\nThis action cannot be undone.`)) {
-                          deleteWarehouse(warehouse.id);
-                        }
-                      }} 
-                      className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-red-500/20"
-                      style={{ color: "var(--color-danger)" }}
-                      title="Delete warehouse"
-                    >
-                      <FiTrash2 size={14} />
-                    </button>
-                  )}
-                  {!canDelete && !isDefault && (
-                    <span className="text-[10px] px-2 py-1 rounded" style={{ color: "var(--color-text-faint)" }}>
-                      View only
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              {/* Inventory Table */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
-                      <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
-                        style={{ color: "var(--color-text-faint)", width: "50px" }}>#</th>
-                      <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
-                        style={{ color: "var(--color-text-faint)" }}>Product</th>
-                      <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
-                        style={{ color: "var(--color-text-faint)" }}>SKU</th>
-                      <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
-                        style={{ color: "var(--color-text-faint)" }}>Quantity</th>
-                      <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
-                        style={{ color: "var(--color-text-faint)" }}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {inventoryItems.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="px-4 py-6 text-center" style={{ color: "var(--color-text-faint)" }}>
-                          <div className="flex flex-col items-center gap-1">
-                            <MdWarehouse size={24} className="opacity-30" />
-                            <p className="text-xs">No products in this warehouse</p>
-                            <p className="text-[10px]">Products will appear here when inventory is added</p>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : (
-                      inventoryItems.map((item, index) => {
-                        const qty = item.quantity || 0;
-                        let statusLabel: string;
-                        let statusColor: { bg: string; text: string };
-                        
-                        if (qty === 0) {
-                          statusLabel = 'Out of Stock';
-                          statusColor = { bg: "var(--color-stock-out-soft)", text: "var(--color-stock-out)" };
-                        } else if (qty <= 10) {
-                          statusLabel = 'Low Stock';
-                          statusColor = { bg: "var(--color-stock-low-soft)", text: "var(--color-stock-low)" };
-                        } else {
-                          statusLabel = 'In Stock';
-                          statusColor = { bg: "var(--color-stock-in-soft)", text: "var(--color-stock-in)" };
-                        }
-
-                        return (
-                          <tr key={item.id} 
-                            style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
-                            onMouseEnter={e => (e.currentTarget.style.background = "var(--color-surface-2)")}
-                            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
-                            <td className="px-4 py-2 font-mono text-[10px]" style={{ color: "var(--color-text-faint)" }}>
-                              {String(index + 1).padStart(2, '0')}
-                            </td>
-                            <td className="px-4 py-2 font-medium" style={{ color: "var(--color-text-primary)" }}>
-                              {item.productName || 'Unknown Product'}
-                            </td>
-                            <td className="px-4 py-2 font-mono text-[10px]" style={{ color: "var(--color-text-muted)" }}>
-                              {item.productId ? `SKU-${item.productId.slice(0, 6).toUpperCase()}` : `SKU-${(item.id || "UNKNOWN").slice(0, 6).toUpperCase()}`}
-                            </td>
-                            <td className="px-4 py-2 font-semibold" style={{ color: "var(--color-text-primary)" }}>
-                              {qty}
-                            </td>
-                            <td className="px-4 py-2">
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize"
-                                style={{ 
-                                  background: statusColor.bg, 
-                                  color: statusColor.text 
-                                }}>
-                                {statusLabel}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Warehouse Footer */}
-              <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2"
-                style={{ borderTop: "1px solid var(--color-border-subtle)" }}>
-                <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
-                  {inventoryItems.length} item{inventoryItems.length !== 1 ? "s" : ""} • {totalItems} units total
-                </span>
-                <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
-                  Created {toDate(warehouse.createdAt).toLocaleDateString()}
-                </span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    )}
-  </div>
-)}
-
-        {/* ══ CATEGORIES TAB ══ */}
-        {oTab==="categories" && (
-          !hasAccess ? <UpgradePrompt/> :
+        {oTab === "staff" && (
+          !hasAccess ? <UpgradePrompt /> :
           <div className="p-5">
             <div className="flex items-center justify-between mb-5">
-              <h1 className="text-xl font-bold" style={{color:"var(--color-text-primary)"}}>Product Categories</h1>
-              <button onClick={()=>setShowAddCat(p=>!p)} className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold"
-                style={{background:"var(--color-brand-primary)",color:"white"}}>
-                <MdAdd size={16}/>{showAddCat?"Cancel":"Add Category"}
+              <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>Staff Management</h1>
+              <div className="flex gap-2">
+                <button onClick={() => loadStaff()} className="flex items-center gap-1 px-3 py-2 rounded-lg text-xs"
+                  style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-soft)" }}>
+                  <MdRefresh size={14} /> Refresh
+                </button>
+                <button onClick={() => setShowAddStaff(true)} className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold"
+                  style={{ background: "var(--color-brand-primary)", color: "white" }}>
+                  <MdAdd size={16} /> Add Staff
+                </button>
+              </div>
+            </div>
+            {staffError && (
+              <div className="mb-3 px-4 py-2 rounded-xl text-xs" style={{ background: "var(--color-danger-soft)", color: "var(--color-danger)" }}>
+                {staffError} <button className="underline ml-2" onClick={() => loadStaff()}>Retry</button>
+              </div>
+            )}
+            <Panel>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
+                    {["Name", "Email", "Role", "Warehouse", "Status", "Actions"].map(h => <TH key={h} h={h} />)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {staffLoading ? <Spinner colSpan={6} />
+                    : staff.length === 0
+                      ? <tr><td colSpan={6} className="text-center py-10" style={{ color: "var(--color-text-faint)" }}>
+                          No staff yet.{" "}
+                          <button onClick={() => setShowAddStaff(true)} className="underline" style={{ color: "var(--color-brand-primary-soft)" }}>Add first member</button>
+                        </td></tr>
+                      : staff.map(u => (
+                        <tr key={u.uid} style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
+                          onMouseEnter={e => (e.currentTarget.style.background = "var(--color-surface-2)")}
+                          onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                          <td className="px-4 py-3 font-medium" style={{ color: "var(--color-text-primary)" }}>{u.displayName || "—"}</td>
+                          <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>{u.email}</td>
+                          <td className="px-4 py-3">
+                            <select value={u.role} onChange={e => updateRole(u.uid, e.target.value as UserRole)}
+                              className="rounded-lg px-2 py-1 text-xs outline-none"
+                              style={{ background: "var(--color-surface-3)", color: "var(--color-text-secondary)", border: "1px solid var(--color-border-soft)" }}>
+                              {STAFF_ROLES.map(r => <option key={r} value={r}>{r.replace("_", " ")}</option>)}
+                            </select>
+                          </td>
+                          <td className="px-4 py-3">
+                            <select value={u.assignedWarehouseId ?? ""} onChange={e => updateWarehouseAssignment(u.uid, e.target.value || undefined)}
+                              className="rounded-lg px-2 py-1 text-xs outline-none"
+                              style={{ background: "var(--color-surface-3)", color: "var(--color-text-secondary)", border: "1px solid var(--color-border-soft)" }}>
+                              <option value="">No warehouse</option>
+                              {warehouses.map((warehouse) => (
+                                <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize"
+                              style={{ background: u.status === "active" ? "var(--color-stock-in-soft)" : "var(--color-danger-soft)", color: u.status === "active" ? "var(--color-stock-in)" : "var(--color-danger)" }}>
+                              {u.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex gap-2">
+                              <button onClick={() => toggleStatus(u.uid, u.status)} className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:opacity-70"
+                                style={{ background: "var(--color-surface-3)", color: u.status === "active" ? "var(--color-warning)" : "var(--color-success)" }}
+                                title={u.status === "active" ? "Deactivate user" : "Activate user"}>
+                                {u.status === "active" ? <MdBlock size={13} /> : <MdCheckCircle size={13} />}
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  if (window.confirm(`⚠️ Remove "${u.displayName || u.email}"?\n\nThis will permanently remove this staff member from the company. They will no longer have access to this account.\n\nThis action cannot be undone.`)) {
+                                    removeStaff(u.uid);
+                                  }
+                                }} 
+                                className="w-7 h-7 flex items-center justify-center rounded-lg transition-colors hover:bg-red-500/20"
+                                style={{ background: "var(--color-danger-soft)", color: "var(--color-danger)" }}
+                                title="Remove staff member"
+                              >
+                                <MdDelete size={13} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                </tbody>
+              </table>
+            </Panel>
+          </div>
+        )}
+
+        {/* ══ WAREHOUSES TAB ══ */}
+        {oTab === "warehouses" && (
+          !hasAccess ? <UpgradePrompt /> :
+          <div className="p-5">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>Warehouses</h1>
+                <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+                  Manage your warehouse locations and inventory
+                </p>
+              </div>
+              {isOwner && (
+                <button 
+                  onClick={() => setShowAddWh(p => !p)} 
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold transition-all hover:opacity-80"
+                  style={{ background: "var(--color-brand-primary)", color: "white" }}
+                >
+                  <MdAdd size={16} /> {showAddWh ? "Cancel" : "Add Warehouse"}
+                </button>
+              )}
+            </div>
+
+            {showAddWh && isOwner && (
+              <form onSubmit={addWarehouse} className="mb-5 rounded-xl p-4"
+                style={{ background: "var(--color-surface-1)", border: "1px solid var(--color-border-soft)" }}>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  <input 
+                    placeholder="Warehouse Name*" 
+                    required
+                    value={whForm.name} 
+                    onChange={e => setWhForm(f => ({ ...f, name: e.target.value }))} 
+                    style={S} 
+                  />
+                  <input 
+                    placeholder="Code e.g. WH-001*" 
+                    required
+                    value={whForm.code} 
+                    onChange={e => setWhForm(f => ({ ...f, code: e.target.value }))} 
+                    style={S} 
+                  />
+                  <input 
+                    placeholder="Address" 
+                    value={whForm.address} 
+                    onChange={e => setWhForm(f => ({ ...f, address: e.target.value }))} 
+                    style={S} 
+                  />
+                  <input 
+                    placeholder="City" 
+                    value={whForm.city} 
+                    onChange={e => setWhForm(f => ({ ...f, city: e.target.value }))} 
+                    style={S} 
+                  />
+                  <input 
+                    placeholder="Country" 
+                    value={whForm.country} 
+                    onChange={e => setWhForm(f => ({ ...f, country: e.target.value }))} 
+                    style={S} 
+                  />
+                  <button 
+                    type="submit" 
+                    className="sm:col-span-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-80"
+                    style={{ background: "var(--color-brand-primary)", color: "white" }}
+                  >
+                    Create Warehouse
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {whLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <div className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin"
+                  style={{ borderColor: "var(--color-brand-primary)" }} />
+              </div>
+            ) : warehouses.length === 0 ? (
+              <div className="rounded-xl p-8 text-center"
+                style={{ background: "var(--color-surface-1)", border: "1px dashed var(--color-border-soft)" }}>
+                <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                  No warehouses yet
+                </p>
+                <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
+                  {isOwner ? "Create your first warehouse to start managing inventory" : "Contact your company owner to set up warehouses"}
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4">
+                {warehouses.map(warehouse => {
+                  const inventoryItems = warehouseInventory[warehouse.id] ?? [];
+                  const totalItems = inventoryItems.reduce((sum, item) => sum + (item.quantity || 0), 0);
+                  const uniqueProducts = inventoryItems.length;
+                  const isDefault = warehouse.isDefault || warehouse.id === "main_warehouse";
+                  const canDelete = isOwner && !isDefault;
+
+                  return (
+                    <div key={warehouse.id} className="rounded-xl overflow-hidden"
+                      style={{ 
+                        background: "var(--color-surface-1)", 
+                        border: `1px solid ${isDefault ? "var(--color-border-brand)" : "var(--color-border-soft)"}` 
+                      }}>
+                      
+                      <div className="flex flex-wrap items-center justify-between gap-2 p-4"
+                        style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+                            style={{ background: "var(--color-surface-3)" }}>
+                            <MdWarehouse size={20} style={{ color: "var(--color-brand-primary-soft)" }} />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                                {warehouse.name}
+                              </p>
+                              {isDefault && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                                  style={{ background: "var(--color-stock-in-soft)", color: "var(--color-stock-in)" }}>
+                                  Default
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                              {warehouse.code} • {[warehouse.address, warehouse.city, warehouse.country].filter(Boolean).join(", ") || "No address set"}
+                            </p>
+                          </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-4 flex-wrap">
+                          <div className="text-right">
+                            <p className="text-xs font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                              {totalItems}
+                            </p>
+                            <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>Total Stock</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-xs font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                              {uniqueProducts}
+                            </p>
+                            <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>Products</p>
+                          </div>
+                          {canDelete && (
+                            <button 
+                              onClick={() => {
+                                if (window.confirm(`⚠️ Delete "${warehouse.name}"?\n\nThis will permanently remove this warehouse and all its inventory records.\n\nThis action cannot be undone.`)) {
+                                  deleteWarehouse(warehouse.id);
+                                }
+                              }} 
+                              className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-red-500/20"
+                              style={{ color: "var(--color-danger)" }}
+                              title="Delete warehouse"
+                            >
+                              <FiTrash2 size={14} />
+                            </button>
+                          )}
+                          {!canDelete && !isDefault && (
+                            <span className="text-[10px] px-2 py-1 rounded" style={{ color: "var(--color-text-faint)" }}>
+                              View only
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
+                              <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
+                                style={{ color: "var(--color-text-faint)", width: "50px" }}>#</th>
+                              <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
+                                style={{ color: "var(--color-text-faint)" }}>Product</th>
+                              <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
+                                style={{ color: "var(--color-text-faint)" }}>SKU</th>
+                              <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
+                                style={{ color: "var(--color-text-faint)" }}>Quantity</th>
+                              <th className="px-4 py-2 text-left font-semibold uppercase tracking-wide text-[10px]"
+                                style={{ color: "var(--color-text-faint)" }}>Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {inventoryItems.length === 0 ? (
+                              <tr>
+                                <td colSpan={5} className="px-4 py-6 text-center" style={{ color: "var(--color-text-faint)" }}>
+                                  <div className="flex flex-col items-center gap-1">
+                                    <MdWarehouse size={24} className="opacity-30" />
+                                    <p className="text-xs">No products in this warehouse</p>
+                                    <p className="text-[10px]">Products will appear here when inventory is added</p>
+                                  </div>
+                                </td>
+                              </tr>
+                            ) : (
+                              inventoryItems.map((item, index) => {
+                                const qty = item.quantity || 0;
+                                let statusLabel: string;
+                                let statusColor: { bg: string; text: string };
+                                
+                                if (qty === 0) {
+                                  statusLabel = 'Out of Stock';
+                                  statusColor = { bg: "var(--color-stock-out-soft)", text: "var(--color-stock-out)" };
+                                } else if (qty <= 10) {
+                                  statusLabel = 'Low Stock';
+                                  statusColor = { bg: "var(--color-stock-low-soft)", text: "var(--color-stock-low)" };
+                                } else {
+                                  statusLabel = 'In Stock';
+                                  statusColor = { bg: "var(--color-stock-in-soft)", text: "var(--color-stock-in)" };
+                                }
+
+                                return (
+                                  <tr key={item.id} 
+                                    style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
+                                    onMouseEnter={e => (e.currentTarget.style.background = "var(--color-surface-2)")}
+                                    onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                                    <td className="px-4 py-2 font-mono text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                                      {String(index + 1).padStart(2, '0')}
+                                    </td>
+                                    <td className="px-4 py-2 font-medium" style={{ color: "var(--color-text-primary)" }}>
+                                      {item.productName || 'Unknown Product'}
+                                    </td>
+                                    <td className="px-4 py-2 font-mono text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                                      {item.productId ? `SKU-${item.productId.slice(0, 6).toUpperCase()}` : `SKU-${(item.id || "UNKNOWN").slice(0, 6).toUpperCase()}`}
+                                    </td>
+                                    <td className="px-4 py-2 font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                                      {qty}
+                                    </td>
+                                    <td className="px-4 py-2">
+                                      <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize"
+                                        style={{ 
+                                          background: statusColor.bg, 
+                                          color: statusColor.text 
+                                        }}>
+                                        {statusLabel}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2"
+                        style={{ borderTop: "1px solid var(--color-border-subtle)" }}>
+                        <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                          {inventoryItems.length} item{inventoryItems.length !== 1 ? "s" : ""} • {totalItems} units total
+                        </span>
+                        <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                          Created {toDate(warehouse.createdAt).toLocaleDateString()}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ CATEGORIES TAB ══ */}
+        {oTab === "categories" && (
+          !hasAccess ? <UpgradePrompt /> :
+          <div className="p-5">
+            <div className="flex items-center justify-between mb-5">
+              <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>Product Categories</h1>
+              <button onClick={() => setShowAddCat(p => !p)} className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold"
+                style={{ background: "var(--color-brand-primary)", color: "white" }}>
+                <MdAdd size={16} /> {showAddCat ? "Cancel" : "Add Category"}
               </button>
             </div>
             {showAddCat && (
               <form onSubmit={addCategory} className="mb-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <input required placeholder="Category name*" value={catForm.name}
-                  onChange={e=>setCatForm(f=>({...f,name:e.target.value}))} style={S}/>
+                  onChange={e => setCatForm(f => ({ ...f, name: e.target.value }))} style={S} />
                 <input placeholder="Description (optional)" value={catForm.description}
-                  onChange={e=>setCatForm(f=>({...f,description:e.target.value}))} style={S}/>
+                  onChange={e => setCatForm(f => ({ ...f, description: e.target.value }))} style={S} />
                 <button type="submit" className="sm:col-span-2 py-2.5 rounded-xl text-sm font-semibold"
-                  style={{background:"var(--color-brand-primary)",color:"white"}}>Save Category</button>
+                  style={{ background: "var(--color-brand-primary)", color: "white" }}>Save Category</button>
               </form>
             )}
-            {catLoading ? <p style={{color:"var(--color-text-faint)"}}>Loading…</p>
-            : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {categories.map(c=>(
+            {catLoading ? <p style={{ color: "var(--color-text-faint)" }}>Loading…</p>
+              : <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {categories.map(c => (
                   <div key={c.id} className="rounded-xl p-4 flex items-start justify-between"
-                    style={{background:"var(--color-surface-1)",border:"1px solid var(--color-border-soft)"}}>
+                    style={{ background: "var(--color-surface-1)", border: "1px solid var(--color-border-soft)" }}>
                     <div>
-                      <p className="text-sm font-semibold" style={{color:"var(--color-text-primary)"}}>{c.name}</p>
-                      {c.description && <p className="text-xs mt-0.5" style={{color:"var(--color-text-muted)"}}>{c.description}</p>}
+                      <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>{c.name}</p>
+                      {c.description && <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>{c.description}</p>}
                     </div>
                     <button 
                       onClick={() => {
@@ -1180,37 +1467,65 @@ const OwnerDashboardPage = () => {
         )}
 
         {/* ══ TRANSFERS TAB ══ */}
-        {oTab==="transfers" && (
-          !hasAccess ? <UpgradePrompt/> :
+        {oTab === "transfers" && (
+          !hasAccess ? <UpgradePrompt /> :
           <div className="p-5">
-            <div className="flex items-center justify-between mb-5">
+            <div className="flex flex-wrap items-center justify-between mb-5 gap-3">
               <div>
-                <h1 className="text-xl font-bold" style={{color:"var(--color-text-primary)"}}>Stock Transfers</h1>
-                <p className="text-xs mt-0.5" style={{color:"var(--color-text-muted)"}}>Create transfer requests between warehouses and confirm them as received.</p>
+                <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>Stock Transfers</h1>
+                <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>Create transfer requests between warehouses and confirm them as received.</p>
               </div>
-              <button onClick={()=>loadTransfers()} className="flex items-center gap-1 px-3 py-2 rounded-lg text-xs"
-                style={{background:"var(--color-surface-3)",color:"var(--color-text-muted)",border:"1px solid var(--color-border-soft)"}}>
-                <MdRefresh size={14}/> Refresh
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={transferStatusFilter}
+                  onChange={(e) => {
+                    setTransferStatusFilter(e.target.value);
+                    setTransferLastVisible(null);
+                    setAllTransfersLoaded(false);
+                    setTimeout(() => {
+                      loadTransfers(companyId, false);
+                    }, 100);
+                  }}
+                  className="rounded-xl px-3 py-1.5 text-xs outline-none"
+                  style={S}
+                >
+                  <option value="all">All Status</option>
+                  <option value="pending">Pending</option>
+                  <option value="in_transit">In Transit</option>
+                  <option value="completed">Completed</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
+                
+                <button 
+                  onClick={() => {
+                    setTransferLastVisible(null);
+                    loadTransfers(companyId, false);
+                  }} 
+                  className="flex items-center gap-1 px-3 py-2 rounded-lg text-xs"
+                  style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-soft)" }}
+                >
+                  <MdRefresh size={14} /> Refresh
+                </button>
+              </div>
             </div>
 
             {canCreateTransfer && (
               <div className="mb-5 rounded-2xl p-4"
-                style={{background:"var(--color-surface-1)",border:"1px solid var(--color-border-soft)"}}>
+                style={{ background: "var(--color-surface-1)", border: "1px solid var(--color-border-soft)" }}>
                 <div className="flex items-center justify-between mb-3">
                   <div>
-                    <p className="text-sm font-semibold" style={{color:"var(--color-text-primary)"}}>Request Transfer</p>
-                    <p className="text-xs mt-0.5" style={{color:"var(--color-text-muted)"}}>Create a new pending transfer from one warehouse to another.</p>
+                    <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>Request Transfer</p>
+                    <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>Create a new pending transfer from one warehouse to another.</p>
                   </div>
                 </div>
                 {transferRequestError && (
-                  <div className="mb-3 px-3 py-2 rounded-lg text-xs" style={{background:"var(--color-danger-soft)",color:"var(--color-danger)"}}>
+                  <div className="mb-3 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--color-danger-soft)", color: "var(--color-danger)" }}>
                     {transferRequestError}
                   </div>
                 )}
                 <form onSubmit={requestTransfer} className="grid grid-cols-1 md:grid-cols-5 gap-3">
-                  <select value={transferForm.fromWarehouseId} disabled={!!hasWarehouseScope && !!assignedWarehouseId} onChange={e=>{
-                    setTransferForm((p)=>({ ...p, fromWarehouseId: e.target.value, productId: "", quantity: 1 }));
+                  <select value={transferForm.fromWarehouseId} disabled={!!hasWarehouseScope && !!assignedWarehouseId} onChange={e => {
+                    setTransferForm((p) => ({ ...p, fromWarehouseId: e.target.value, productId: "", quantity: 1 }));
                   }} className="rounded-xl px-3 py-2 text-xs outline-none" style={S}>
                     <option value="">From warehouse</option>
                     {(hasWarehouseScope && assignedWarehouseId
@@ -1219,13 +1534,13 @@ const OwnerDashboardPage = () => {
                       <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
                     ))}
                   </select>
-                  <select value={transferForm.toWarehouseId} onChange={e=>setTransferForm((p)=>({ ...p, toWarehouseId: e.target.value }))} className="rounded-xl px-3 py-2 text-xs outline-none" style={S}>
+                  <select value={transferForm.toWarehouseId} onChange={e => setTransferForm((p) => ({ ...p, toWarehouseId: e.target.value }))} className="rounded-xl px-3 py-2 text-xs outline-none" style={S}>
                     <option value="">To warehouse</option>
                     {warehouses.filter((warehouse) => warehouse.id !== transferForm.fromWarehouseId).map((warehouse) => (
                       <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
                     ))}
                   </select>
-                  <select value={transferForm.productId} onChange={e=>setTransferForm((p)=>({ ...p, productId: e.target.value, quantity: 1 }))} className="rounded-xl px-3 py-2 text-xs outline-none" style={S}>
+                  <select value={transferForm.productId} onChange={e => setTransferForm((p) => ({ ...p, productId: e.target.value, quantity: 1 }))} className="rounded-xl px-3 py-2 text-xs outline-none" style={S}>
                     <option value="">Choose product</option>
                     {transferInventoryItems.map((item) => (
                       <option key={item.id} value={item.productId}>{item.productName}</option>
@@ -1251,11 +1566,11 @@ const OwnerDashboardPage = () => {
                     }}
                     className="rounded-xl px-3 py-2 text-xs outline-none" style={S} placeholder="Qty"
                   />
-                  <input value={transferForm.notes} onChange={e=>setTransferForm((p)=>({ ...p, notes: e.target.value }))} className="rounded-xl px-3 py-2 text-xs outline-none" style={S} placeholder="Notes (optional)" />
+                  <input value={transferForm.notes} onChange={e => setTransferForm((p) => ({ ...p, notes: e.target.value }))} className="rounded-xl px-3 py-2 text-xs outline-none" style={S} placeholder="Notes (optional)" />
                   <div className="md:col-span-5 text-[11px]" style={{ color: "var(--color-text-faint)" }}>
                     {selectedInventoryItem ? `Available in source warehouse: ${selectedInventoryItem.quantity}` : "Select a source warehouse and product to see available stock."}
                   </div>
-                  <button type="submit" disabled={!canRequestTransfer || transferRequestLoading} className="md:col-span-5 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-50" style={{background:"var(--color-brand-primary)",color:"white"}}>
+                  <button type="submit" disabled={!canRequestTransfer || transferRequestLoading} className="md:col-span-5 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-50" style={{ background: "var(--color-brand-primary)", color: "white" }}>
                     {transferRequestLoading ? "Creating Request…" : "Create Transfer Request"}
                   </button>
                 </form>
@@ -1264,22 +1579,28 @@ const OwnerDashboardPage = () => {
 
             <Panel>
               <table className="w-full text-xs">
-                <thead><tr style={{borderBottom:"1px solid var(--color-border-subtle)"}}>
-                  {["#","From","To","Items","Status","Actions"].map(h=><TH key={h} h={h}/>)}
+                <thead><tr style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
+                  {["#", "From", "To", "Items", "Status", "Actions"].map(h => <TH key={h} h={h} />)}
                 </tr></thead>
                 <tbody>
-                  {trfLoading ? <Spinner colSpan={9}/>
-                  : movements.length===0
-                    ? <tr><td colSpan={6} className="text-center py-10" style={{color:"var(--color-text-faint)"}}>No transfers yet.</td></tr>
-                    : transfers.map(t=>{
-                      const SC: Record<string,string> = {
+                  {trfLoading ? (
+                    <Spinner colSpan={6} />
+                  ) : transfers.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="text-center py-10" style={{ color: "var(--color-text-faint)" }}>
+                        No transfers found.
+                      </td>
+                    </tr>
+                  ) : (
+                    transfers.map(t => {
+                      const SC: Record<string, string> = {
                         draft: "var(--color-text-faint)",
                         pending: "var(--color-info)",
                         in_transit: "var(--color-info)",
                         completed: "var(--color-success)",
                         cancelled: "var(--color-danger)",
                       };
-                      const SB: Record<string,string> = {
+                      const SB: Record<string, string> = {
                         draft: "var(--color-surface-3)",
                         pending: "var(--color-info-soft)",
                         in_transit: "var(--color-info-soft)",
@@ -1292,36 +1613,100 @@ const OwnerDashboardPage = () => {
                           ? t.toWarehouseId === assignedWarehouseId && (t.status === "pending" || t.status === "in_transit")
                           : false;
                       const canCancel = isOwner && (t.status === "draft" || t.status === "pending" || t.status === "in_transit");
+                      const totalItems = (t.items ?? []).reduce((sum, item) => sum + (item.quantity || 0), 0);
+                      
                       return (
-                        <tr key={t.id} style={{borderBottom:"1px solid var(--color-border-subtle)"}}
-                          onMouseEnter={e=>(e.currentTarget.style.background="var(--color-surface-2)")}
-                          onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
-                          <td className="px-4 py-3 font-mono text-[10px]" style={{color:"var(--color-text-muted)"}}>{t.transferNumber}</td>
-                          <td className="px-4 py-3" style={{color:"var(--color-text-secondary)"}}>{t.fromWarehouseName}</td>
-                          <td className="px-4 py-3" style={{color:"var(--color-text-secondary)"}}>{t.toWarehouseName}</td>
-                          <td className="px-4 py-3" style={{color:"var(--color-text-secondary)"}}>
-                        <div className="space-y-1">
-                          {(t.items ?? []).map((item) => (
-                            <div key={item.id ?? `${t.id}-${item.productId}`} className="flex items-center justify-between gap-2">
-                              <span>{item.productName}</span>
-                              <span className="font-semibold" style={{ color: "var(--color-brand-primary-soft)" }}>{item.quantity}</span>
+                        <tr key={t.id} style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
+                          onMouseEnter={e => (e.currentTarget.style.background = "var(--color-surface-2)")}
+                          onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                          <td className="px-4 py-3 font-mono text-[10px]" style={{ color: "var(--color-text-muted)" }}>{t.transferNumber}</td>
+                          <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>{t.fromWarehouseName}</td>
+                          <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>{t.toWarehouseName}</td>
+                          <td className="px-4 py-3" style={{ color: "var(--color-text-secondary)" }}>
+                            <div className="space-y-1">
+                              {(t.items ?? []).map((item) => (
+                                <div key={item.id ?? `${t.id}-${item.productId}`} className="flex items-center justify-between gap-2">
+                                  <span>{item.productName}</span>
+                                  <span className="font-semibold" style={{ color: "var(--color-brand-primary-soft)" }}>{item.quantity}</span>
+                                </div>
+                              ))}
+                              <div className="text-[10px] font-semibold pt-1" style={{ color: "var(--color-text-faint)" }}>
+                                Total: {totalItems} items
+                              </div>
                             </div>
-                          ))}
-                        </div>
                           </td>
                           <td className="px-4 py-3">
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize"
-                              style={{background:SB[t.status]??"var(--color-surface-3)",color:SC[t.status]??"var(--color-text-muted)"}}>
-                              {t.status.replace("_"," ")}
+                              style={{ background: SB[t.status] ?? "var(--color-surface-3)", color: SC[t.status] ?? "var(--color-text-muted)" }}>
+                              {t.status.replace("_", " ")}
                             </span>
                           </td>
-                          <td className="px-4 py-3"><div className="flex gap-1 flex-wrap">
-                            {canConfirm && <button onClick={()=>updateTransfer(t.id,"completed")} className="px-2 py-1 rounded text-[10px] font-semibold" style={{background:"var(--color-stock-in-soft)",color:"var(--color-stock-in)"}}>Confirm Receipt</button>}
-                            {canCancel && <button onClick={()=>updateTransfer(t.id,"cancelled")} className="px-2 py-1 rounded text-[10px] font-semibold" style={{background:"var(--color-danger-soft)",color:"var(--color-danger)"}}>Cancel</button>}
-                          </div></td>
+                          <td className="px-4 py-3">
+                            <div className="flex gap-1 flex-wrap">
+                              {canConfirm && (
+                                <button 
+                                  onClick={() => {
+                                    if (window.confirm(`✅ Confirm Receipt?\n\nTransfer #${t.transferNumber}\nFrom: ${t.fromWarehouseName}\nTo: ${t.toWarehouseName}\nItems: ${totalItems} units\n\nThis will move the stock to the destination warehouse. This action cannot be undone.`)) {
+                                      updateTransfer(t.id, "completed");
+                                    }
+                                  }} 
+                                  className="px-2 py-1 rounded text-[10px] font-semibold transition-colors hover:opacity-80"
+                                  style={{ background: "var(--color-stock-in-soft)", color: "var(--color-stock-in)" }}
+                                >
+                                  Confirm Receipt
+                                </button>
+                              )}
+                              {canCancel && (
+                                <button 
+                                  onClick={() => {
+                                    if (window.confirm(`⚠️ Cancel Transfer?\n\nTransfer #${t.transferNumber}\nFrom: ${t.fromWarehouseName}\nTo: ${t.toWarehouseName}\nItems: ${totalItems} units\n\nThis will cancel the transfer and release any reserved stock. This action cannot be undone.`)) {
+                                      updateTransfer(t.id, "cancelled");
+                                    }
+                                  }} 
+                                  className="px-2 py-1 rounded text-[10px] font-semibold transition-colors hover:opacity-80"
+                                  style={{ background: "var(--color-danger-soft)", color: "var(--color-danger)" }}
+                                >
+                                  Cancel
+                                </button>
+                              )}
+                            </div>
+                          </td>
                         </tr>
                       );
-                    })}
+                    })
+                  )}
+                  
+                  {/* Load More Row */}
+                  {!trfLoading && transfers.length > 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                            Showing {transfers.length} of {transferTotalCount} transfers
+                          </span>
+                          {transferHasMore && !allTransfersLoaded && (
+                            <button
+                              onClick={() => loadTransfers(companyId, true)}
+                              disabled={transferLoadingMore}
+                              className="px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors hover:opacity-80"
+                              style={{ 
+                                background: "var(--color-surface-3)", 
+                                color: "var(--color-text-secondary)",
+                                border: "1px solid var(--color-border-soft)"
+                              }}
+                            >
+                              {transferLoadingMore ? "Loading..." : "Load More"}
+                            </button>
+                          )}
+                          {!transferHasMore && transferTotalCount > 0 && (
+                            <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                              All transfers loaded
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </Panel>
@@ -1329,43 +1714,157 @@ const OwnerDashboardPage = () => {
         )}
 
         {/* ══ STOCK LOG TAB ══ */}
-        {oTab==="movements" && (
-          !hasAccess ? <UpgradePrompt/> :
+        {oTab === "movements" && (
+          !hasAccess ? <UpgradePrompt /> :
           <div className="p-5">
-            <h1 className="text-xl font-bold mb-5" style={{color:"var(--color-text-primary)"}}>Stock Movement Log</h1>
+            <div className="flex flex-wrap items-center justify-between mb-5 gap-3">
+              <div>
+                <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>Stock Movement Log</h1>
+                <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+                  View all inventory movements and transactions
+                </p>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={movementTypeFilter}
+                  onChange={(e) => {
+                    setMovementTypeFilter(e.target.value);
+                    setMovementLastVisible(null);
+                    setAllMovementsLoaded(false);
+                    setTimeout(() => {
+                      loadMovements(companyId, false);
+                    }, 100);
+                  }}
+                  className="rounded-xl px-3 py-1.5 text-xs outline-none"
+                  style={S}
+                >
+                  <option value="all">All Types</option>
+                  <option value="stock_in">Stock In</option>
+                  <option value="stock_out">Stock Out</option>
+                  <option value="transfer_in">Transfer In</option>
+                  <option value="transfer_out">Transfer Out</option>
+                  <option value="adjustment">Adjustment</option>
+                </select>
+                
+                <button 
+                  onClick={() => {
+                    setMovementLastVisible(null);
+                    setAllMovementsLoaded(false);
+                    loadMovements(companyId, false);
+                  }} 
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs"
+                  style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-soft)" }}
+                >
+                  <MdRefresh size={14} /> Refresh
+                </button>
+              </div>
+            </div>
+
             <Panel>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
-                  <thead><tr style={{borderBottom:"1px solid var(--color-border-subtle)"}}>
-                    {["Date","Product","SKU","Warehouse","Type","Qty","Before","After","Ref"].map(h=><TH key={h} h={h}/>)}
-                  </tr></thead>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--color-border-subtle)" }}>
+                      {["Date", "Product", "SKU", "Warehouse", "Type", "Qty", "Before", "After", "Ref"].map(h => <TH key={h} h={h} />)}
+                    </tr>
+                  </thead>
                   <tbody>
-                    {trfLoading ? <Spinner/>
-                    : movements.length===0
-                      ? <tr><td colSpan={9} className="text-center py-10" style={{color:"var(--color-text-faint)"}}>No movements recorded yet.</td></tr>
-                      : movements.map(m=>{
-                        const pos = m.quantity>0;
+                    {trfLoading ? (
+                      <Spinner colSpan={9} />
+                    ) : movements.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="text-center py-10" style={{ color: "var(--color-text-faint)" }}>
+                          No movements recorded yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      movements.map((m) => {
+                        const pos = m.quantity > 0;
                         const d = m.createdAt instanceof Date
                           ? m.createdAt
                           : typeof m.createdAt === "object" && m.createdAt !== null && "toDate" in m.createdAt
                             ? (m.createdAt as FirebaseTimestamp).toDate()
                             : new Date();
+                        
+                        const typeColors: Record<string, { bg: string; text: string }> = {
+                          stock_in: { bg: "var(--color-stock-in-soft)", text: "var(--color-stock-in)" },
+                          stock_out: { bg: "var(--color-stock-out-soft)", text: "var(--color-stock-out)" },
+                          transfer_in: { bg: "var(--color-info-soft)", text: "var(--color-info)" },
+                          transfer_out: { bg: "var(--color-info-soft)", text: "var(--color-info)" },
+                          adjustment: { bg: "var(--color-warning-soft)", text: "var(--color-warning)" },
+                        };
+                        const typeColor = typeColors[m.type] || { bg: "var(--color-surface-3)", text: "var(--color-text-muted)" };
+
                         return (
-                          <tr key={m.id} style={{borderBottom:"1px solid var(--color-border-subtle)"}}
-                            onMouseEnter={e=>(e.currentTarget.style.background="var(--color-surface-2)")}
-                            onMouseLeave={e=>(e.currentTarget.style.background="transparent")}>
-                            <td className="px-3 py-2" style={{color:"var(--color-text-faint)"}}>{d.toLocaleDateString()}</td>
-                            <td className="px-3 py-2 font-medium" style={{color:"var(--color-text-primary)"}}>{m.productName}</td>
-                            <td className="px-3 py-2 font-mono text-[10px]" style={{color:"var(--color-text-muted)"}}>{m.sku}</td>
-                            <td className="px-3 py-2" style={{color:"var(--color-text-muted)"}}>{m.warehouseId}</td>
-                            <td className="px-3 py-2 capitalize" style={{color:"var(--color-text-secondary)"}}>{m.type.replace("_"," ")}</td>
-                            <td className="px-3 py-2 font-semibold" style={{color:pos?"var(--color-success)":"var(--color-danger)"}}>{pos?"+":""}{m.quantity}</td>
-                            <td className="px-3 py-2" style={{color:"var(--color-text-faint)"}}>{m.balanceBefore}</td>
-                            <td className="px-3 py-2" style={{color:"var(--color-text-faint)"}}>{m.balanceAfter}</td>
-                            <td className="px-3 py-2 font-mono text-[10px]" style={{color:"var(--color-text-faint)"}}>{m.reference||"—"}</td>
+                          <tr key={m.id} style={{ borderBottom: "1px solid var(--color-border-subtle)" }}
+                            onMouseEnter={e => (e.currentTarget.style.background = "var(--color-surface-2)")}
+                            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                            <td className="px-3 py-2" style={{ color: "var(--color-text-faint)" }}>
+                              {d.toLocaleDateString()}
+                            </td>
+                            <td className="px-3 py-2 font-medium" style={{ color: "var(--color-text-primary)" }}>
+                              {m.productName}
+                            </td>
+                            <td className="px-3 py-2 font-mono text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                              {m.sku}
+                            </td>
+                            <td className="px-3 py-2" style={{ color: "var(--color-text-muted)" }}>
+                              {m.warehouseId}
+                            </td>
+                            <td className="px-3 py-2">
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize"
+                                style={{ background: typeColor.bg, color: typeColor.text }}>
+                                {m.type.replace("_", " ")}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 font-semibold" style={{ color: pos ? "var(--color-success)" : "var(--color-danger)" }}>
+                              {pos ? "+" : ""}{m.quantity}
+                            </td>
+                            <td className="px-3 py-2" style={{ color: "var(--color-text-faint)" }}>
+                              {m.balanceBefore}
+                            </td>
+                            <td className="px-3 py-2" style={{ color: "var(--color-text-faint)" }}>
+                              {m.balanceAfter}
+                            </td>
+                            <td className="px-3 py-2 font-mono text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                              {m.reference || "—"}
+                            </td>
                           </tr>
                         );
-                      })}
+                      })
+                    )}
+                    
+                    {/* Load More Row */}
+                    {!trfLoading && movements.length > 0 && (
+                      <tr>
+                        <td colSpan={9} className="px-4 py-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                              Showing {movements.length} of {movementTotalCount} movements
+                            </span>
+                            {movementHasMore && !allMovementsLoaded && (
+                              <button
+                                onClick={() => loadMovements(companyId, true)}
+                                disabled={movementLoadingMore}
+                                className="px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors hover:opacity-80"
+                                style={{ 
+                                  background: "var(--color-surface-3)", 
+                                  color: "var(--color-text-secondary)",
+                                  border: "1px solid var(--color-border-soft)"
+                                }}
+                              >
+                                {movementLoadingMore ? "Loading..." : "Load More"}
+                              </button>
+                            )}
+                            {!movementHasMore && movementTotalCount > 0 && (
+                              <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                                All movements loaded
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -1373,63 +1872,299 @@ const OwnerDashboardPage = () => {
           </div>
         )}
 
+     {/* ══ NOTIFICATIONS TAB ══ */}
+{oTab === "notifications" && (
+  !hasAccess ? <UpgradePrompt /> :
+  <div className="p-5">
+    <div className="flex flex-wrap items-center justify-between mb-5 gap-3">
+      <div>
+        <h1 className="text-xl font-bold" style={{ color: "var(--color-text-primary)" }}>
+          Notifications
+          {notificationCount > 0 && (
+            <span className="ml-2 text-sm font-normal" style={{ color: "var(--color-text-muted)" }}>
+              ({notificationCount} unread)
+            </span>
+          )}
+        </h1>
+        <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+          Stay updated with all your inventory activities and transfer requests
+        </p>
+      </div>
+      {/* Add this in the Notifications tab header */}
+<div className="flex items-center gap-2 flex-wrap">
+  {notificationCount > 0 && (
+    <button
+      onClick={markAllNotificationsAsRead}
+      className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs transition-colors hover:opacity-80"
+      style={{ 
+        background: "var(--color-brand-primary)", 
+        color: "white",
+      }}
+    >
+      <MdCheckCircle size={14} /> Mark All as Read
+    </button>
+  )}
+  
+  {/* ✅ Debug button to check notifications */}
+  <button
+    onClick={async () => {
+      console.log("🔍 Debugging notifications...");
+      try {
+        const result = await NotificationService.list(companyId, 50, null, 'all');
+        console.log("📝 All notifications:", result.notifications);
+        console.log("📊 Total count:", result.totalCount);
+        const count = await NotificationService.getUnreadCount(companyId);
+        console.log("📊 Unread count:", count);
+        // Force refresh
+        await loadNotificationsList(companyId, false);
+        await loadNotifications();
+        alert(`Found ${result.notifications.length} notifications (${count} unread)`);
+      } catch (error) {
+        console.error("Debug error:", error);
+        alert("Error checking notifications. Check console for details.");
+      }
+    }}
+    className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs"
+    style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-soft)" }}
+  >
+    🔍 Debug
+  </button>
+  
+  <button
+    onClick={() => {
+      setNotificationLastVisible(null);
+      setAllNotificationsLoaded(false);
+      loadNotificationsList(companyId, false);
+    }}
+    className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs"
+    style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)", border: "1px solid var(--color-border-soft)" }}
+  >
+    <MdRefresh size={14} /> Refresh
+  </button>
+</div>
+    </div>
+
+    {/* Notifications List */}
+    {notificationsLoading ? (
+      <div className="flex items-center justify-center py-12">
+        <div className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin"
+          style={{ borderColor: "var(--color-brand-primary)" }} />
+      </div>
+    ) : notifications.length === 0 ? (
+      <div className="rounded-xl p-12 text-center"
+        style={{ background: "var(--color-surface-1)", border: "1px dashed var(--color-border-soft)" }}>
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-16 h-16 rounded-full flex items-center justify-center"
+            style={{ background: "var(--color-surface-3)" }}>
+            <MdNotifications size={32} style={{ color: "var(--color-text-faint)" }} />
+          </div>
+          <div>
+            <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+              No notifications yet
+            </p>
+            <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
+              You'll see notifications here when there are transfers or inventory updates
+            </p>
+          </div>
+        </div>
+      </div>
+    ) : (
+      <div className="space-y-3">
+        {notifications.map((notification) => {
+          const isUnread = notification.status === 'unread';
+          const createdAt = notification.createdAt?.toDate?.() || new Date(notification.createdAt);
+          const timeAgo = getTimeAgo(createdAt);
+
+          // Get icon and color based on type
+          const getIconAndColor = () => {
+            switch (notification.type) {
+              case 'transfer_request':
+                return { icon: <MdSwapHoriz size={20} />, color: 'var(--color-info)', bg: 'bg-blue-500/10' };
+              case 'transfer_completed':
+                return { icon: <MdCheckCircle size={20} />, color: 'var(--color-success)', bg: 'bg-green-500/10' };
+              case 'transfer_cancelled':
+                return { icon: <MdBlock size={20} />, color: 'var(--color-danger)', bg: 'bg-red-500/10' };
+              default:
+                return { icon: <MdNotifications size={20} />, color: 'var(--color-brand-primary-soft)', bg: 'bg-purple-500/10' };
+            }
+          };
+
+          const { icon, color, bg } = getIconAndColor();
+
+          return (
+            <div
+              key={notification.id}
+              className={`rounded-xl p-4 transition-all cursor-pointer hover:shadow-md ${
+                isUnread ? 'border-l-4' : 'opacity-70'
+              }`}
+              style={{
+                background: isUnread ? "var(--color-surface-2)" : "var(--color-surface-1)",
+                borderLeft: isUnread ? `4px solid var(--color-brand-primary-soft)` : "4px solid transparent",
+                border: `1px solid ${isUnread ? "var(--color-border-brand)" : "var(--color-border-soft)"}`,
+              }}
+              onClick={() => {
+                if (isUnread) {
+                  markNotificationAsRead(notification.id);
+                }
+                // If it's a transfer notification, navigate to transfers tab
+                if (notification.type === 'transfer_request' || 
+                    notification.type === 'transfer_completed' || 
+                    notification.type === 'transfer_cancelled') {
+                  setOTab('transfers');
+                }
+              }}
+            >
+              <div className="flex items-start gap-3">
+                {/* Icon */}
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${bg}`}>
+                  <span style={{ color }}>{icon}</span>
+                </div>
+
+                {/* Content */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold" style={{ color: "var(--color-text-primary)" }}>
+                        {notification.title}
+                        {isUnread && (
+                          <span className="ml-2 text-[10px] px-2 py-0.5 rounded-full font-normal"
+                            style={{ background: "var(--color-brand-primary)", color: "white" }}>
+                            New
+                          </span>
+                        )}
+                      </p>
+                      
+                      {/* Message with line breaks */}
+                      <p className="text-xs mt-1 whitespace-pre-line" style={{ color: "var(--color-text-secondary)" }}>
+                        {notification.message}
+                      </p>
+                      
+                      {/* Show transfer details */}
+                      {notification.fromWarehouse && notification.toWarehouse && (
+                        <div className="mt-2 flex items-center gap-2 text-[10px] flex-wrap">
+                          <span className="px-2 py-0.5 rounded" style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)" }}>
+                            📦 {notification.fromWarehouse}
+                          </span>
+                          <span style={{ color: "var(--color-text-faint)" }}>→</span>
+                          <span className="px-2 py-0.5 rounded" style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)" }}>
+                            📦 {notification.toWarehouse}
+                          </span>
+                          {notification.totalItems && (
+                            <span className="px-2 py-0.5 rounded" style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)" }}>
+                              📊 {notification.totalItems} units
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      
+                      {/* Show notes if present */}
+                      {notification.notes && notification.notes.trim() && (
+                        <div className="mt-2 text-[10px] p-2 rounded"
+                          style={{ background: "var(--color-surface-3)", color: "var(--color-text-secondary)" }}>
+                          📝 <span className="font-medium">Note:</span> {notification.notes}
+                        </div>
+                      )}
+                      
+                      {/* Show items */}
+                      {notification.items && notification.items.length > 0 && (
+                        <div className="mt-2 text-[10px] flex flex-wrap gap-1">
+                          {notification.items.map((item: { productName: string; quantity: number }, i: number) => (
+                            <span key={i} className="px-2 py-0.5 rounded flex items-center gap-1"
+                              style={{ background: "var(--color-surface-3)", color: "var(--color-text-muted)" }}>
+                              {item.productName} <strong style={{ color: "var(--color-brand-primary-soft)" }}>×{item.quantity}</strong>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-[10px] shrink-0" style={{ color: "var(--color-text-faint)" }}>
+                      {timeAgo}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Load More */}
+        {notificationHasMore && !allNotificationsLoaded && (
+          <div className="text-center py-4">
+            <button
+              onClick={() => loadNotificationsList(companyId, true)}
+              disabled={notificationLoadingMore}
+              className="px-6 py-2 rounded-lg text-xs font-semibold transition-colors hover:opacity-80"
+              style={{ 
+                background: "var(--color-surface-3)", 
+                color: "var(--color-text-secondary)",
+                border: "1px solid var(--color-border-soft)"
+              }}
+            >
+              {notificationLoadingMore ? "Loading..." : "Load More Notifications"}
+            </button>
+          </div>
+        )}
+      </div>
+    )}
+  </div>
+)}
+
         {/* ══ SUBSCRIPTION TAB ══ */}
-        {oTab==="plan" && (
+        {oTab === "plan" && (
           <div className="p-5">
-            {/* Trial status banner inside plan tab */}
             {isTrial && !isGuest && (
               <div className="mb-6 px-5 py-4 rounded-xl flex items-center justify-between"
-                style={{background:"var(--color-info-soft)",border:"1px solid var(--color-info-border)"}}>
+                style={{ background: "var(--color-info-soft)", border: "1px solid var(--color-info-border)" }}>
                 <div>
-                  <p className="text-sm font-semibold" style={{color:"var(--color-info)"}}>
+                  <p className="text-sm font-semibold" style={{ color: "var(--color-info)" }}>
                     You are on a free trial
                   </p>
-                  <p className="text-xs mt-0.5" style={{color:"var(--color-text-secondary)"}}>
-                    {daysLeft!=null&&daysLeft>0
-                      ? `${daysLeft} day${daysLeft!==1?"s":""} remaining — subscribe to keep full access after trial ends.`
+                  <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>
+                    {daysLeft != null && daysLeft > 0
+                      ? `${daysLeft} day${daysLeft !== 1 ? "s" : ""} remaining — subscribe to keep full access after trial ends.`
                       : "Your trial has expired. Select a plan below to continue."}
                   </p>
                 </div>
-                <span className="text-2xl font-extrabold ml-4" style={{color:"var(--color-info)"}}>{daysLeft??0}d</span>
+                <span className="text-2xl font-extrabold ml-4" style={{ color: "var(--color-info)" }}>{daysLeft ?? 0}d</span>
               </div>
             )}
             {isGuest && (
               <div className="mb-6 px-5 py-4 rounded-xl"
-                style={{background:"var(--color-stock-in-soft)",border:"1px solid var(--color-stock-in-border)"}}>
-                <p className="text-sm font-semibold" style={{color:"var(--color-stock-in)"}}>You are on a Guest Demo account</p>
-                <p className="text-xs mt-0.5" style={{color:"var(--color-text-secondary)"}}>Guest accounts have permanent full access. Register a company account to manage a real business.</p>
+                style={{ background: "var(--color-stock-in-soft)", border: "1px solid var(--color-stock-in-border)" }}>
+                <p className="text-sm font-semibold" style={{ color: "var(--color-stock-in)" }}>You are on a Guest Demo account</p>
+                <p className="text-xs mt-0.5" style={{ color: "var(--color-text-secondary)" }}>Guest accounts have permanent full access. Register a company account to manage a real business.</p>
               </div>
             )}
-            <h1 className="text-xl font-bold mb-1" style={{color:"var(--color-text-primary)"}}>Choose a Plan</h1>
-            <p className="text-xs mb-6" style={{color:"var(--color-text-muted)"}}>
+            <h1 className="text-xl font-bold mb-1" style={{ color: "var(--color-text-primary)" }}>Choose a Plan</h1>
+            <p className="text-xs mb-6" style={{ color: "var(--color-text-muted)" }}>
               Current plan:{" "}
-              <span className="font-semibold capitalize" style={{color:"var(--color-brand-primary-soft)"}}>
-                {company?.plan?.replace("_"," ")??"Starter"}
+              <span className="font-semibold capitalize" style={{ color: "var(--color-brand-primary-soft)" }}>
+                {company?.plan?.replace("_", " ") ?? "Starter"}
               </span>
             </p>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {PLANS.map(plan=>{
-                const active = company?.plan===plan.id;
+              {PLANS.map(plan => {
+                const active = company?.plan === plan.id;
                 return (
                   <div key={plan.id} className="relative flex flex-col rounded-2xl p-6"
-                    style={{background:plan.highlighted?"linear-gradient(160deg,#1e1b4b,#1a2238)":"var(--color-surface-1)",border:active?"2px solid var(--color-brand-primary-soft)":plan.highlighted?"1px solid var(--color-border-brand-strong)":"1px solid var(--color-border-soft)",boxShadow:plan.highlighted?"var(--shadow-glow)":"none"}}>
-                    {plan.badge && <div className="absolute -top-3.5 left-1/2 -translate-x-1/2"><span className="px-4 py-1 rounded-full text-xs font-bold" style={{background:"var(--color-brand-primary)",color:"white"}}>{plan.badge}</span></div>}
-                    {active && <div className="absolute -top-3.5 right-4"><span className="px-3 py-1 rounded-full text-xs font-bold" style={{background:"var(--color-stock-in-soft)",color:"var(--color-stock-in)"}}>Current</span></div>}
-                    <p className="text-sm font-semibold mb-1" style={{color:plan.highlighted?"var(--color-brand-primary-soft)":"var(--color-text-muted)"}}>{plan.name}</p>
-                    <div className="mb-5"><span className="text-4xl font-extrabold" style={{color:"var(--color-text-primary)"}}>${plan.price}</span><span className="text-sm ml-1" style={{color:"var(--color-text-muted)"}}>/{plan.period}</span></div>
-                    <div className="h-px mb-4" style={{background:"var(--color-border-soft)"}}/>
+                    style={{ background: plan.highlighted ? "linear-gradient(160deg,#1e1b4b,#1a2238)" : "var(--color-surface-1)", border: active ? "2px solid var(--color-brand-primary-soft)" : plan.highlighted ? "1px solid var(--color-border-brand-strong)" : "1px solid var(--color-border-soft)", boxShadow: plan.highlighted ? "var(--shadow-glow)" : "none" }}>
+                    {plan.badge && <div className="absolute -top-3.5 left-1/2 -translate-x-1/2"><span className="px-4 py-1 rounded-full text-xs font-bold" style={{ background: "var(--color-brand-primary)", color: "white" }}>{plan.badge}</span></div>}
+                    {active && <div className="absolute -top-3.5 right-4"><span className="px-3 py-1 rounded-full text-xs font-bold" style={{ background: "var(--color-stock-in-soft)", color: "var(--color-stock-in)" }}>Current</span></div>}
+                    <p className="text-sm font-semibold mb-1" style={{ color: plan.highlighted ? "var(--color-brand-primary-soft)" : "var(--color-text-muted)" }}>{plan.name}</p>
+                    <div className="mb-5"><span className="text-4xl font-extrabold" style={{ color: "var(--color-text-primary)" }}>${plan.price}</span><span className="text-sm ml-1" style={{ color: "var(--color-text-muted)" }}>/{plan.period}</span></div>
+                    <div className="h-px mb-4" style={{ background: "var(--color-border-soft)" }} />
                     <ul className="flex-1 space-y-2.5 mb-5">
-                      {plan.features.map(f=>(
+                      {plan.features.map(f => (
                         <li key={f.label} className="flex items-center gap-2 text-xs">
-                          <FaCheck className="shrink-0 text-[10px]" style={{color:f.included?"var(--color-success)":"var(--color-text-faint)"}}/>
-                          <span style={{color:f.included?"var(--color-text-secondary)":"var(--color-text-faint)"}}>{f.label}</span>
+                          <FaCheck className="shrink-0 text-[10px]" style={{ color: f.included ? "var(--color-success)" : "var(--color-text-faint)" }} />
+                          <span style={{ color: f.included ? "var(--color-text-secondary)" : "var(--color-text-faint)" }}>{f.label}</span>
                         </li>
                       ))}
                     </ul>
-                    <button onClick={()=>updatePlan(plan.id)} disabled={active}
+                    <button onClick={() => updatePlan(plan.id)} disabled={active}
                       className="w-full py-2.5 rounded-xl text-sm font-semibold disabled:opacity-50"
-                      style={active?{background:"var(--color-stock-in-soft)",color:"var(--color-stock-in)"}:plan.highlighted?{background:"var(--color-brand-primary)",color:"white"}:{background:"transparent",color:"var(--color-text-primary)",border:"1px solid var(--color-border-medium)"}}>
-                      {active?"✓ Active Plan":`Subscribe to ${plan.name}`}
+                      style={active ? { background: "var(--color-stock-in-soft)", color: "var(--color-stock-in)" } : plan.highlighted ? { background: "var(--color-brand-primary)", color: "white" } : { background: "transparent", color: "var(--color-text-primary)", border: "1px solid var(--color-border-medium)" }}>
+                      {active ? "✓ Active Plan" : `Subscribe to ${plan.name}`}
                     </button>
                   </div>
                 );
@@ -1440,14 +2175,14 @@ const OwnerDashboardPage = () => {
       </main>
 
       {/* FAB */}
-      {oTab==="dashboard"&&dView==="dashboard"&&(
-        <button onClick={()=>setDView("add-product")} className="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-4 py-3 rounded-full text-sm font-semibold"
-          style={{background:"var(--color-brand-primary)",color:"white",boxShadow:"var(--shadow-glow)"}}>
-          <MdAdd size={20}/> Add Product
+      {oTab === "dashboard" && dView === "dashboard" && (
+        <button onClick={() => setDView("add-product")} className="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-4 py-3 rounded-full text-sm font-semibold"
+          style={{ background: "var(--color-brand-primary)", color: "white", boxShadow: "var(--shadow-glow)" }}>
+          <MdAdd size={20} /> Add Product
         </button>
       )}
 
-      {showAddStaff && <AddStaffModal companyId={companyId} onClose={()=>setShowAddStaff(false)} onAdded={()=>loadStaff()} warehouses={warehouses}/>}
+      {showAddStaff && <AddStaffModal companyId={companyId} onClose={() => setShowAddStaff(false)} onAdded={() => loadStaff()} warehouses={warehouses} />}
 
       {editItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -1469,6 +2204,19 @@ const OwnerDashboardPage = () => {
             } : undefined}
           />
         </div>
+      )}
+
+           {/* ✅ Sale Modal - Add this here */}
+      {selectedProductForSale && (
+        <SaleModal
+          product={selectedProductForSale}
+          companyId={companyId}
+          onClose={() => setSelectedProductForSale(null)}
+          onSaleComplete={() => {
+            // Refresh all data after sale
+            refreshAllData();
+          }}
+        />
       )}
     </div>
   );

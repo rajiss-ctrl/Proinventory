@@ -1,17 +1,19 @@
-import { useState } from "react";
+import { useState, useEffect,useNavigation } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   MdDashboard, MdInventory, MdShoppingCart, MdReceipt,
   MdPeople, MdWarehouse, MdSwapHoriz, MdBarChart,
   MdDescription, MdExtension, MdNotifications,
   MdMessage, MdSettings, MdLogout, MdChevronLeft,
-  MdMenu,
+  MdMenu, MdAdd,
 } from "react-icons/md";
 import { logOut } from "../../services/firebase";
 import { clearCurrentUser } from "../../features/auth/authSlice";
 import { clearCompany } from "../../features/company/companySlice";
 import { useDispatch } from "react-redux";
 import Logo from "../../assets/img/stocktrack-logo.png";
+import { NotificationService } from "../../services/notification.service";
+import useAppSelector from "../../hooks/useAppSelector";
 
 interface NavItem {
   label: string;
@@ -26,7 +28,7 @@ interface DashboardSidebarProps {
   collapsed: boolean;
   onToggleCollapse: () => void;
   activeView?: "dashboard" | "add-product";
-  alertCount?: number;
+  notificationCount?: number;
   messageCount?: number;
   onAlertsClick?: () => void;
 }
@@ -36,21 +38,42 @@ const DashboardSidebar = ({
   collapsed,
   onToggleCollapse,
   activeView = "dashboard",
-  alertCount = 0,
+  notificationCount = 0,
   messageCount = 0,
   onAlertsClick,
 }: DashboardSidebarProps) => {
-  const location  = useLocation();
-  const navigate  = useNavigate();
-  const dispatch  = useDispatch();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const dispatch = useDispatch();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const companyId = useAppSelector(s => s.auth.profile?.companyId ?? s.auth.user?.companyId) ?? "";
+
+  // Load notification count periodically
+  useEffect(() => {
+    if (!companyId) return;
+    
+    const loadCount = async () => {
+      try {
+        await NotificationService.getUnreadCount(companyId);
+        // If you need to use the count, set it in state
+        // setNotificationCount(count);
+      } catch (error) {
+        console.error("Failed to load notification count:", error);
+      }
+    };
+    
+    loadCount();
+    
+    // Refresh every 30 seconds
+    const interval = setInterval(loadCount, 30000);
+    return () => clearInterval(interval);
+  }, [companyId]);
 
   const handleLogout = async () => {
     try {
       await logOut();
       dispatch(clearCurrentUser());
       dispatch(clearCompany());
-      // Clear both storages explicitly
       sessionStorage.removeItem("currentUser");
       localStorage.removeItem("currentUser");
       navigate("/login");
@@ -60,20 +83,40 @@ const DashboardSidebar = ({
   };
 
   const mainNav: NavItem[] = [
-    { label: "Dashboard",       icon: <MdDashboard size={18} />,   to: "/dashboard" },
-    { label: "Products",        icon: <MdInventory size={18} />,   to: "/dashboard" },
-    { label: "Orders",          icon: <MdShoppingCart size={18} />,to: "/dashboard" },
-    { label: "Purchase Orders", icon: <MdReceipt size={18} />,     to: "/dashboard" },
-    { label: "Suppliers",       icon: <MdPeople size={18} />,      to: "/dashboard" },
-    { label: "Warehouses",      icon: <MdWarehouse size={18} />,   to: "/dashboard" },
-    { label: "Transfers",       icon: <MdSwapHoriz size={18} />,   to: "/dashboard" },
-    { label: "Analytics",       icon: <MdBarChart size={18} />,    to: "/dashboard" },
-    { label: "Reports",         icon: <MdDescription size={18} />, to: "/dashboard" },
-    { label: "Integrations",    icon: <MdExtension size={18} />,   to: "/dashboard" },
+    { label: "Dashboard", icon: <MdDashboard size={18} />, to: "/dashboard" },
+    { label: "Products", icon: <MdInventory size={18} />, to: "/dashboard" },
+    { label: "Orders", icon: <MdShoppingCart size={18} />, to: "/dashboard" },
+    { label: "Purchase Orders", icon: <MdReceipt size={18} />, to: "/dashboard" },
+    { label: "Suppliers", icon: <MdPeople size={18} />, to: "/dashboard" },
+    { label: "Warehouses", icon: <MdWarehouse size={18} />, to: "/dashboard" },
+    { label: "Transfers", icon: <MdSwapHoriz size={18} />, to: "/dashboard" },
+    { label: "Analytics", icon: <MdBarChart size={18} />, to: "/dashboard" },
+    { label: "Reports", icon: <MdDescription size={18} />, to: "/dashboard" },
+    { label: "Integrations", icon: <MdExtension size={18} />, to: "/dashboard" },
   ];
 
+  // Use notificationCount for the badge
   const bottomNav: NavItem[] = [
-    { label: "Alerts", icon: <MdNotifications size={18} />, onClick: onAlertsClick ?? (() => navigate("/dashboard")), badge: alertCount },
+
+      { 
+    label: "Notifications", 
+    icon: <MdNotifications size={18} />, 
+    onClick: () => {
+      if (onAlertsClick) {
+        onAlertsClick();
+      } else {
+        navigate("/dashboard?tab=notifications");
+      }
+    }, 
+    badge: notificationCount
+  },
+
+    // { 
+    //   label: "Notifications", 
+    //   icon: <MdNotifications size={18} />, 
+    //   onClick: onAlertsClick ?? (() => navigate("/dashboard")), 
+    //   badge: notificationCount // ✅ Use notificationCount
+    // },
     { label: "Messages", icon: <MdMessage size={18} />, to: "/dashboard", badge: messageCount },
     { label: "Settings", icon: <MdSettings size={18} />, to: "/dashboard" },
     { label: "Log Out", icon: <MdLogout size={18} />, onClick: handleLogout },
@@ -175,7 +218,7 @@ const DashboardSidebar = ({
       </div>
 
       {/* Main nav */}
-      <nav className="flex-1 overflow-y-auto px-2 py-3">
+      <nav className="flex-1 overflow-y-auto scrollbar-hide px-2 py-3">
         <ul className="space-y-0.5">
           {mainNav.map((item) => <NavLink key={item.label} item={item} />)}
         </ul>
