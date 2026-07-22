@@ -303,7 +303,11 @@ const [notificationHasMore, setNotificationHasMore] = useState(false);
 const [notificationLastVisible, setNotificationLastVisible] = useState<any>(null);
 const [notificationLoadingMore, setNotificationLoadingMore] = useState(false);
 const [allNotificationsLoaded, setAllNotificationsLoaded] = useState(false);
-const [selectedProductForSale, setSelectedProductForSale] = useState<Product | null>(null);
+const [selectedProductForSale, setSelectedProductForSale] = useState<{
+  product: Product;
+  warehouseId: string;
+  warehouseName: string;
+} | null>(null);
   // Notification state
   const [notificationCount, setNotificationCount] = useState(0);
 
@@ -380,9 +384,6 @@ const loadNotifications = useCallback(async (cid = companyId) => {
     // Don't update count on error - keep existing value
   }
 }, [companyId]);
-
-
- 
 
   /* ── Data loaders ── */
   const loadStaff = useCallback(async (cid = companyId) => {
@@ -561,17 +562,27 @@ const loadNotifications = useCallback(async (cid = companyId) => {
 
 
 
-  // ============================================================
-  // SALE HANDLERS
-  // ============================================================
-  const handleSellProduct = (product: Product) => {
-    // Check if product has stock
-    if ((product.product_Qty || 0) <= 0) {
-      alert("This product is out of stock and cannot be sold.");
-      return;
-    }
-    setSelectedProductForSale(product);
-  };
+ // ============================================================
+// SALE HANDLERS
+// ============================================================
+const handleSellProduct = (product: Product) => {
+  // Check if product has stock
+  if ((product.product_Qty || 0) <= 0) {
+    alert("This product is out of stock and cannot be sold.");
+    return;
+  }
+  
+  // Get the current warehouse where the product is being viewed
+  const warehouseId = previewWarehouseId;
+  const warehouse = warehouses.find(w => w.id === warehouseId);
+  const warehouseName = warehouse?.name || warehouseId;
+  
+  setSelectedProductForSale({
+    product,
+    warehouseId,
+    warehouseName,
+  });
+};
 
   const loadNotificationsList = useCallback(async (cid = companyId, loadMore = false) => {
   if (!cid) return;
@@ -1063,7 +1074,14 @@ const getTimeAgo = (date: Date): string => {
                   <CategoryDonutChart productsOverride={displayedProducts}/>
                 </div>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <LowStockPanel/><RecentActivityPanel/>
+                  {/* <LowStockPanel warehouseId={previewWarehouseId} /> */}
+                  <LowStockPanel 
+                  productsOverride={displayedProducts} 
+                  warehouseId={previewWarehouseId}
+                  warehouseInventory={warehouseInventory} // ✅ Pass the inventory data
+                />
+                  <RecentActivityPanel warehouseId={previewWarehouseId} />
+                  {/* <LowStockPanel/><RecentActivityPanel/> */}
                 </div>
                 <ProductsTable onEdit={id=>setEditId(id)} onAdd={()=>setDView("add-product")} onSell={handleSellProduct} productsOverride={displayedProducts}/>
               </div>
@@ -2206,18 +2224,17 @@ const getTimeAgo = (date: Date): string => {
         </div>
       )}
 
-           {/* ✅ Sale Modal - Add this here */}
-      {selectedProductForSale && (
-        <SaleModal
-          product={selectedProductForSale}
-          companyId={companyId}
-          onClose={() => setSelectedProductForSale(null)}
-          onSaleComplete={() => {
-            // Refresh all data after sale
-            refreshAllData();
-          }}
-        />
-      )}
+{/* ✅ Sale Modal - Add this here */}
+{selectedProductForSale && (
+  <SaleModal
+    product={selectedProductForSale.product}
+    companyId={companyId}
+    warehouseId={selectedProductForSale.warehouseId}
+    warehouseName={selectedProductForSale.warehouseName}
+    onClose={() => setSelectedProductForSale(null)}
+    onSaleComplete={refreshAllData}
+  />
+)}
     </div>
   );
 };

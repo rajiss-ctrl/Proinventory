@@ -290,22 +290,48 @@ export const CategoryDonutChart = ({ productsOverride }: CategoryDonutChartProps
     </div>
   );
 };
-
 /* ─────────────────────────────────────────────────────────────
    LOW STOCK ALERT PANEL
 ───────────────────────────────────────────────────────────── */
 interface LowStockPanelProps {
   productsOverride?: Product[];
+  warehouseId?: string;
+  warehouseInventory?: Record<string, InventoryRecord[]>;
 }
 
-export const LowStockPanel = ({ productsOverride }: LowStockPanelProps) => {
+export const LowStockPanel = ({ 
+  productsOverride, 
+  warehouseId,
+  warehouseInventory: propWarehouseInventory 
+}: LowStockPanelProps) => {
   const reduxProducts = useSelector((s: RootState) => s.stock.productData);
   const products = productsOverride ?? reduxProducts;
+  const warehouseInventory = propWarehouseInventory || {};
 
-  const LOW = 10;
+  // Get warehouse-specific stock levels
+  const getWarehouseStock = (productId: string): number => {
+    if (!warehouseId) {
+      const product = products.find(p => p.id === productId);
+      return product?.product_Qty || 0;
+    }
+    
+    const inventoryItems = warehouseInventory[warehouseId] || [];
+    const item = inventoryItems.find((i: any) => i.productId === productId);
+    return item?.quantity || 0;
+  };
+
+  // Filter products where stock is 10 or less (including 0)
   const lowItems = products
-    .filter((p: Product) => p.product_Qty <= LOW && p.product_Qty > 0)
-    .slice(0, 5);
+    .filter((p: Product) => {
+      const stock = getWarehouseStock(p.id);
+      return stock <= 10;
+    })
+    .sort((a, b) => {
+      const stockA = getWarehouseStock(a.id);
+      const stockB = getWarehouseStock(b.id);
+      return stockA - stockB;
+    })
+    .slice(0, 8);
 
   // Show empty state when no low stock items
   if (lowItems.length === 0) {
@@ -323,7 +349,9 @@ export const LowStockPanel = ({ productsOverride }: LowStockPanelProps) => {
             All Stock Levels Are Healthy
           </p>
           <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
-            No products are currently low on stock. Great job managing your inventory!
+            {warehouseId 
+              ? `All products in this warehouse have more than 10 units in stock.` 
+              : `All products have more than 10 units in stock.`}
           </p>
         </div>
       </div>
@@ -331,7 +359,7 @@ export const LowStockPanel = ({ productsOverride }: LowStockPanelProps) => {
   }
 
   const stockColor = (qty: number) =>
-    qty === 0 ? "var(--color-danger)" : qty <= 3 ? "var(--color-warning)" : "var(--color-success)";
+    qty === 0 ? "var(--color-danger)" : qty <= 3 ? "var(--color-warning)" : "var(--color-stock-low)";
 
   return (
     <div
@@ -340,7 +368,11 @@ export const LowStockPanel = ({ productsOverride }: LowStockPanelProps) => {
     >
       <div className="flex items-center justify-between mb-3">
         <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--color-text-muted)" }}>
-          Low Stock Alert
+          Low Stock Alert 
+          {warehouseId && <span style={{ color: "var(--color-text-faint)" }}> in {warehouseId}</span>}
+          <span className="ml-2 text-[10px] font-normal" style={{ color: "var(--color-text-faint)" }}>
+            (10 or less units)
+          </span>
         </p>
         <button className="text-xs" style={{ color: "var(--color-brand-primary-soft)" }}>View All</button>
       </div>
@@ -348,19 +380,32 @@ export const LowStockPanel = ({ productsOverride }: LowStockPanelProps) => {
       <ul className="space-y-3">
         {lowItems.map((item, i) => {
           const product = item as Product;
+          const stock = getWarehouseStock(product.id);
+          const isOutOfStock = stock === 0;
+          
           return (
             <li key={product.id ?? i} className="flex items-center gap-3">
               <div
                 className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 text-lg"
-                style={{ background: "var(--color-surface-3)" }}
+                style={{ background: isOutOfStock ? "var(--color-danger-soft)" : "var(--color-surface-3)" }}
               >
                 {product.img
                   ? <img src={product.img} alt="" className="w-full h-full rounded-lg object-cover" />
-                  : "📦"}
+                  : isOutOfStock ? "⚠️" : "📦"}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-semibold truncate" style={{ color: "var(--color-text-primary)" }}>
                   {product.product_name}
+                  {isOutOfStock && (
+                    <span className="ml-2 text-[10px] font-normal" style={{ color: "var(--color-danger)" }}>
+                      (Out of Stock)
+                    </span>
+                  )}
+                  {!isOutOfStock && stock <= 10 && (
+                    <span className="ml-2 text-[10px] font-normal" style={{ color: "var(--color-stock-low)" }}>
+                      (Low Stock)
+                    </span>
+                  )}
                 </p>
                 <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
                   {product.sku ?? `SKU-${product.id?.slice(0, 6).toUpperCase()}`}
@@ -368,8 +413,9 @@ export const LowStockPanel = ({ productsOverride }: LowStockPanelProps) => {
               </div>
               <div className="shrink-0 text-right">
                 <p className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>Stock</p>
-                <p className="text-sm font-extrabold" style={{ color: stockColor(product.product_Qty) }}>
-                  {product.product_Qty}
+                <p className={`text-sm font-extrabold ${isOutOfStock ? 'animate-pulse' : ''}`} 
+                   style={{ color: stockColor(stock) }}>
+                  {stock}
                 </p>
               </div>
             </li>
@@ -384,7 +430,6 @@ export const LowStockPanel = ({ productsOverride }: LowStockPanelProps) => {
    RECENT ACTIVITY PANEL
 ───────────────────────────────────────────────────────────── */
 
-// ✅ Define ActivityItem interface before using it
 interface ActivityItem {
   icon: string;
   iconBg: string;
@@ -394,14 +439,11 @@ interface ActivityItem {
 
 interface RecentActivityPanelProps {
   productsOverride?: Product[];
+  warehouseId?: string; // ✅ Add warehouseId
 }
 
-export const RecentActivityPanel = ({ productsOverride }: RecentActivityPanelProps) => {
-  // ✅ Use products to check if there's any data
+export const RecentActivityPanel = ({ productsOverride, warehouseId }: RecentActivityPanelProps) => {
   const reduxProducts = useSelector((s: RootState) => s.stock.productData);
-  // We keep this to maintain consistency with other components, but it's not used in this component
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const products = productsOverride ?? reduxProducts;
   const companyId = useSelector((s: RootState) => s.auth.profile?.companyId ?? s.auth.user?.companyId) ?? "";
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -421,7 +463,7 @@ export const RecentActivityPanel = ({ productsOverride }: RecentActivityPanelPro
     return date.toLocaleDateString();
   };
 
-  // Load real activity data
+  // ✅ Load real activity data filtered by warehouse
   useEffect(() => {
     const loadActivities = async () => {
       if (!companyId) {
@@ -432,7 +474,15 @@ export const RecentActivityPanel = ({ productsOverride }: RecentActivityPanelPro
       try {
         setLoading(true);
         // Get recent stock movements
-        const movements = await StockMovementService.listRecent(companyId, 5);
+        let movements = await StockMovementService.listRecent(companyId, 20);
+        
+        // ✅ Filter by warehouse if specified
+        if (warehouseId) {
+          movements = movements.filter(m => m.warehouseId === warehouseId);
+        }
+        
+        // Take only the most recent 5
+        movements = movements.slice(0, 5);
         
         const activityItems: ActivityItem[] = movements.map((movement) => {
           const isPositive = movement.quantity > 0;
@@ -455,6 +505,7 @@ export const RecentActivityPanel = ({ productsOverride }: RecentActivityPanelPro
               <>
                 <strong>{movement.productName}</strong> {action} <strong>{Math.abs(movement.quantity)}</strong> units
                 {movement.type && ` (${movement.type.replace("_", " ")})`}
+                {warehouseId && ` in ${movement.warehouseName || movement.warehouseId}`}
               </>
             ),
             time: timeAgo,
@@ -471,7 +522,7 @@ export const RecentActivityPanel = ({ productsOverride }: RecentActivityPanelPro
     };
     
     loadActivities();
-  }, [companyId]);
+  }, [companyId, warehouseId]); // ✅ Re-run when warehouseId changes
 
   // Show loading state
   if (loading) {
@@ -503,7 +554,9 @@ export const RecentActivityPanel = ({ productsOverride }: RecentActivityPanelPro
             No Recent Activity
           </p>
           <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
-            Activity will appear here when you start adding products, making transfers, or updating inventory.
+            {warehouseId 
+              ? `No activity in this warehouse yet.` 
+              : `Activity will appear here when you start adding products, making transfers, or updating inventory.`}
           </p>
         </div>
       </div>
@@ -517,7 +570,7 @@ export const RecentActivityPanel = ({ productsOverride }: RecentActivityPanelPro
     >
       <div className="flex items-center justify-between mb-3">
         <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--color-text-muted)" }}>
-          Recent Activity
+          Recent Activity {warehouseId && <span style={{ color: "var(--color-text-faint)" }}>in {warehouseId}</span>}
         </p>
         <button className="text-xs" style={{ color: "var(--color-brand-primary-soft)" }}>View All</button>
       </div>

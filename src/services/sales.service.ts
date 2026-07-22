@@ -1,13 +1,12 @@
+// src/services/sales.service.ts
+
 import {
-  collection, doc, setDoc, runTransaction,
+  collection, doc, runTransaction,
   serverTimestamp, getDocs, query, where,
   orderBy, limit, getCountFromServer,
   QueryDocumentSnapshot, startAfter,
 } from "firebase/firestore";
 import db from "./firebase";
-import { Product } from "../types";
-import { InventoryService } from "./inventory.service";
-import { StockMovementService } from "./stock-movement.service";
 
 export interface SaleRecord {
   id: string;
@@ -15,6 +14,8 @@ export interface SaleRecord {
   productId: string;
   productName: string;
   sku: string;
+  warehouseId: string;
+  warehouseName: string;
   quantity: number;
   price: number;
   totalAmount: number;
@@ -33,6 +34,8 @@ export interface RecordSaleInput {
   productId: string;
   productName: string;
   sku: string;
+  warehouseId: string;
+  warehouseName: string;
   quantity: number;
   price: number;
   totalAmount: number;
@@ -52,18 +55,32 @@ export interface PaginatedSales {
   hasMore: boolean;
 }
 
+// Type for inventory data from Firestore
+interface InventoryData {
+  quantity: number;
+  reservedQty?: number;
+  productName?: string;
+  warehouseName?: string;
+  reorderLevel?: number;
+  availableQty?: number;
+  companyId?: string;
+  productId?: string;
+  warehouseId?: string;
+}
+
 export const SalesService = {
   /**
    * Record a sale - updates inventory and creates sale record
+   * Now supports warehouse-specific sales
    */
   async recordSale(input: RecordSaleInput): Promise<string> {
-    const { companyId, productId, quantity, createdBy } = input;
+    const { companyId, productId, quantity, createdBy, warehouseId, warehouseName } = input;
 
     // Get the product document
     const productRef = doc(db, "companies", companyId, "products", productId);
 
-    // Get inventory record
-    const inventoryId = `${productId}_main_warehouse`; // You may need to determine which warehouse
+    // Get inventory record for the specific warehouse
+    const inventoryId = `${productId}_${warehouseId}`;
     const inventoryRef = doc(db, "companies", companyId, "inventory", inventoryId);
 
     let saleId = "";
@@ -78,42 +95,54 @@ export const SalesService = {
       }
 
       if (!inventorySnap.exists()) {
-        throw new Error(`Inventory record for ${input.productName} not found`);
+        throw new Error(`Product "${input.productName}" not found in warehouse "${warehouseName}". Please ensure the product exists in this warehouse.`);
       }
 
-      const productData = productSnap.data();
-      const inventoryData = inventorySnap.data();
+      const inventoryData = inventorySnap.data() as InventoryData;
 
-      // Check stock availability
+      // Check stock availability in this warehouse
       const currentStock = inventoryData.quantity || 0;
       if (currentStock < quantity) {
-        throw new Error(`Insufficient stock. Available: ${currentStock}, Requested: ${quantity}`);
+        throw new Error(`Insufficient stock in "${warehouseName}". Available: ${currentStock}, Requested: ${quantity}`);
       }
 
       const newStock = currentStock - quantity;
       const newReserved = inventoryData.reservedQty || 0;
 
-      // 1. Update inventory
+      // 1. Update inventory for this specific warehouse
       transaction.update(inventoryRef, {
         quantity: newStock,
         availableQty: newStock - newReserved,
         updatedAt: serverTimestamp(),
       });
 
-      // 2. Update product stock
+      // 2. Get total stock across all warehouses
+      const allInventoryRef = collection(db, "companies", companyId, "inventory");
+      const q = query(allInventoryRef, where("productId", "==", productId));
+      const allInventorySnap = await getDocs(q); // ✅ Fixed: renamed to avoid redeclaration
+      
+      let totalQty = 0;
+      allInventorySnap.forEach((doc) => { // ✅ Fixed: forEach exists on QuerySnapshot
+        const data = doc.data() as InventoryData;
+        totalQty += data.quantity || 0;
+      });
+
+      // 3. Update product total stock
       transaction.update(productRef, {
-        stockQuantity: newStock,
-        status: newStock === 0 ? "out_of_stock" : newStock <= 10 ? "low_stock" : "in_stock",
+        stockQuantity: totalQty,
+        status: totalQty === 0 ? "out_of_stock" : totalQty <= 10 ? "low_stock" : "in_stock",
         updatedAt: serverTimestamp(),
       });
 
-      // 3. Create sale record
+      // 4. Create sale record with warehouse info
       const saleRef = doc(collection(db, "companies", companyId, "sales"));
       const saleData: Omit<SaleRecord, "id" | "createdAt"> = {
         companyId,
         productId,
         productName: input.productName,
         sku: input.sku,
+        warehouseId,
+        warehouseName,
         quantity,
         price: input.price,
         totalAmount: input.totalAmount,
@@ -133,26 +162,114 @@ export const SalesService = {
 
       saleId = saleRef.id;
 
-      // 4. Log stock movement
+      // 5. Log stock movement for this warehouse
       const movementRef = doc(collection(db, "companies", companyId, "stockMovements"));
       transaction.set(movementRef, {
         companyId,
         productId,
         productName: input.productName,
         sku: input.sku,
-        warehouseId: "main_warehouse",
+        warehouseId,
+        warehouseName,
         type: "sale",
         quantity: -quantity,
         balanceBefore: currentStock,
         balanceAfter: newStock,
         reference: `SALE-${saleRef.id.slice(0, 8).toUpperCase()}`,
-        notes: `Sale of ${quantity} units to ${input.customerName || "Walk-in Customer"}`,
+        notes: `Sale of ${quantity} units from ${warehouseName} to ${input.customerName || "Walk-in Customer"}`,
         createdBy,
         createdAt: serverTimestamp(),
       });
     });
 
     return saleId;
+  },
+
+  /**
+   * Calculate total quantity of a product across all warehouses
+   */
+  async calculateTotalProductQuantity(
+    companyId: string,
+    productId: string
+  ): Promise<number> {
+    const inventoryRef = collection(db, "companies", companyId, "inventory");
+    const q = query(inventoryRef, where("productId", "==", productId));
+    
+    const snap = await getDocs(q);
+    
+    let total = 0;
+    snap.forEach((doc) => {
+      const data = doc.data() as InventoryData;
+      total += data.quantity || 0;
+    });
+    
+    return total;
+  },
+
+  /**
+   * Get sales for a specific warehouse
+   */
+  async listByWarehouse(
+    companyId: string,
+    warehouseId: string,
+    pageSize: number = 20,
+    lastVisible?: QueryDocumentSnapshot
+  ): Promise<PaginatedSales> {
+    const ref = collection(db, "companies", companyId, "sales");
+    
+    let q = query(
+      ref,
+      where("warehouseId", "==", warehouseId),
+      orderBy("createdAt", "desc"),
+      limit(pageSize)
+    );
+
+    if (lastVisible) {
+      q = query(q, startAfter(lastVisible));
+    }
+
+    const countSnapshot = await getCountFromServer(q);
+    const totalCount = countSnapshot.data().count;
+
+    const snap = await getDocs(q);
+    const sales = snap.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...docSnap.data(),
+    })) as SaleRecord[];
+
+    const lastDoc = snap.docs.length > 0 ? snap.docs[snap.docs.length - 1] : null;
+
+    return {
+      sales,
+      totalCount,
+      lastVisible: lastDoc,
+      hasMore: snap.docs.length === pageSize,
+    };
+  },
+
+  /**
+   * Get total sales amount for a warehouse
+   */
+  async getWarehouseTotalSales(companyId: string, warehouseId: string, days: number = 30): Promise<number> {
+    const ref = collection(db, "companies", companyId, "sales");
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - days);
+    
+    const q = query(
+      ref,
+      where("warehouseId", "==", warehouseId),
+      where("createdAt", ">=", thirtyDaysAgo),
+      orderBy("createdAt", "desc")
+    );
+    
+    const snap = await getDocs(q);
+    let total = 0;
+    snap.forEach((doc) => {
+      const data = doc.data() as SaleRecord;
+      total += data.totalAmount || 0;
+    });
+    
+    return total;
   },
 
   /**
@@ -192,28 +309,5 @@ export const SalesService = {
       lastVisible: lastDoc,
       hasMore: snap.docs.length === pageSize,
     };
-  },
-
-  /**
-   * Get total sales amount for a period
-   */
-  async getTotalSales(companyId: string, days: number = 30): Promise<number> {
-    const ref = collection(db, "companies", companyId, "sales");
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - days);
-    
-    const q = query(
-      ref,
-      where("createdAt", ">=", thirtyDaysAgo),
-      orderBy("createdAt", "desc")
-    );
-    
-    const snap = await getDocs(q);
-    let total = 0;
-    snap.forEach((doc) => {
-      total += doc.data().totalAmount || 0;
-    });
-    
-    return total;
   },
 };

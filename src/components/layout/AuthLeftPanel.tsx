@@ -40,7 +40,7 @@ interface AuthLeftPanelProps {
 
 const AuthLeftPanel = ({ variant }: AuthLeftPanelProps) => (
   <div
-    className="hidden lg:flex flex-col h-full p-10 pb-0 relative overflow-hidden"
+    className="hidden lg:flex flex-col h-full px-10 pt-8 pb-0 relative overflow-hidden"
     style={{ background: "var(--color-bg-sidebar)" }}
   >
     {/* Background glow */}
@@ -67,8 +67,8 @@ const AuthLeftPanel = ({ variant }: AuthLeftPanelProps) => (
 
     {/* Logo */}
     <div className="relative z-10 pb-52">{/* pb-52 keeps content above the bottom illustration */}
-      <Link to="/" className="flex items-center mb-12">
-        <img src={Logo} alt="ProInventory" className="w-12 h-12 rounded-lg" />
+      <Link to="/" className="flex items-center mb-4">
+        <img src={Logo} alt="ProInventory" className="w-14 h-w-14 rounded-lg" />
         <span className="text-white font-bold text-lg">
           Pro<span style={{ color: "var(--color-brand-primary-soft)" }}>Inventory</span>
         </span>
@@ -78,7 +78,7 @@ const AuthLeftPanel = ({ variant }: AuthLeftPanelProps) => (
       {variant === "login" ? (
         <>
           <h2
-            className="text-4xl font-extrabold leading-tight mb-4"
+            className="text-4xl font-extrabold leading-tight mb-"
             style={{ color: "var(--color-text-primary)" }}
           >
             Inventory management{" "}
@@ -86,7 +86,7 @@ const AuthLeftPanel = ({ variant }: AuthLeftPanelProps) => (
             <br />
             powerful, and smart.
           </h2>
-          <p className="text-sm leading-relaxed mb-10" style={{ color: "var(--color-text-muted)" }}>
+          <p className="text-sm leading-relaxed mb-6" style={{ color: "var(--color-text-muted)" }}>
             Track stock, manage orders, and gain real-time insights across your entire business.
           </p>
         </>
@@ -103,7 +103,7 @@ const AuthLeftPanel = ({ variant }: AuthLeftPanelProps) => (
             your{" "}
             <span className="gradient-text">inventory</span>.
           </h2>
-          <p className="text-sm leading-relaxed mb-10" style={{ color: "var(--color-text-muted)" }}>
+          <p className="text-sm leading-relaxed mb-6" style={{ color: "var(--color-text-muted)" }}>
             Join thousands of businesses that trust ProInventory to manage stock, streamline
             operations, and grow faster.
           </p>
@@ -111,7 +111,7 @@ const AuthLeftPanel = ({ variant }: AuthLeftPanelProps) => (
       )}
 
       {/* Feature list */}
-      <ul className="space-y-5">
+      <ul className="space-y-2">
         {FEATURES.map(({ icon, iconBg, iconColor, title, desc }) => (
           <li key={title} className="flex items-start gap-3">
             <div
@@ -135,7 +135,7 @@ const AuthLeftPanel = ({ variant }: AuthLeftPanelProps) => (
 
     {/* 3D inventory illustration — bottom of panel, flush left, slight overflow */}
     <div
-      className="absolute bottom-0 left-0 right-0 pointer-events-none select-none z-10"
+      className="absolute -bottom-2 left-0 right-0 pointer-events-none select-none z-10 pt-14"
       aria-hidden
     >
       <img
@@ -146,7 +146,7 @@ const AuthLeftPanel = ({ variant }: AuthLeftPanelProps) => (
           /* The photoroom-cut image has transparent BG — let the glow show through */
           filter: "drop-shadow(0 -8px 40px rgba(79,70,229,0.45)) drop-shadow(0 0 60px rgba(0,229,255,0.15))",
           /* Align bottom, bleed slightly past the panel edge for depth */
-          marginBottom: "-2px",
+          marginBottom: "-6rem",
           objectFit: "contain",
           objectPosition: "bottom center",
         }}

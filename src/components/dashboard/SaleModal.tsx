@@ -1,10 +1,12 @@
-import { useState, useEffect } from "react";
-import { MdClose, MdShoppingCart, MdAttachMoney } from "react-icons/md";
+import { useState } from "react"; // ✅ Only import useState since useEffect is not used
+import { MdClose, MdShoppingCart, MdAttachMoney, MdWarehouse } from "react-icons/md";
 import { Product } from "../../types";
 
 interface SaleModalProps {
   product: Product;
   companyId: string;
+  warehouseId: string;
+  warehouseName: string;
   onClose: () => void;
   onSaleComplete: () => void;
 }
@@ -31,7 +33,14 @@ const S: React.CSSProperties = {
   width: "100%",
 };
 
-export const SaleModal = ({ product, companyId, onClose, onSaleComplete }: SaleModalProps) => {
+export const SaleModal = ({ 
+  product, 
+  companyId, 
+  warehouseId,
+  warehouseName,
+  onClose, 
+  onSaleComplete 
+}: SaleModalProps) => {
   const [saleData, setSaleData] = useState<SaleData>({
     quantity: 1,
     price: product.product_Price || product.price || 0,
@@ -41,7 +50,9 @@ export const SaleModal = ({ product, companyId, onClose, onSaleComplete }: SaleM
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [maxQuantity, setMaxQuantity] = useState(product.product_Qty || 0);
+  
+  // ✅ Use product.product_Qty directly instead of state
+  const maxQuantity = product.product_Qty || 0;
 
   const subtotal = saleData.quantity * saleData.price;
   const discountAmount = (subtotal * (saleData.discount || 0)) / 100;
@@ -52,14 +63,13 @@ export const SaleModal = ({ product, companyId, onClose, onSaleComplete }: SaleM
     e.preventDefault();
     setError(null);
 
-    // Validate
     if (saleData.quantity <= 0) {
       setError("Quantity must be greater than 0");
       return;
     }
 
     if (saleData.quantity > maxQuantity) {
-      setError(`Only ${maxQuantity} units available in stock`);
+      setError(`Only ${maxQuantity} units available in stock at ${warehouseName}`);
       return;
     }
 
@@ -70,7 +80,6 @@ export const SaleModal = ({ product, companyId, onClose, onSaleComplete }: SaleM
 
     setLoading(true);
     try {
-      // Import the SalesService (we'll create this next)
       const { SalesService } = await import("../../services/sales.service");
       
       await SalesService.recordSale({
@@ -78,6 +87,8 @@ export const SaleModal = ({ product, companyId, onClose, onSaleComplete }: SaleM
         productId: product.id,
         productName: product.name || product.product_name || "",
         sku: product.sku || "",
+        warehouseId,
+        warehouseName,
         quantity: saleData.quantity,
         price: saleData.price,
         totalAmount: total,
@@ -87,7 +98,7 @@ export const SaleModal = ({ product, companyId, onClose, onSaleComplete }: SaleM
         paymentMethod: saleData.paymentMethod,
         discount: saleData.discount || 0,
         tax: saleData.tax || 0,
-        createdBy: "system", // Should come from auth context
+        createdBy: "system",
       });
 
       onSaleComplete();
@@ -118,6 +129,12 @@ export const SaleModal = ({ product, companyId, onClose, onSaleComplete }: SaleM
               <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
                 {product.name || product.product_name}
               </p>
+              <div className="flex items-center gap-1 mt-0.5">
+                <MdWarehouse size={12} style={{ color: "var(--color-text-faint)" }} />
+                <span className="text-[10px]" style={{ color: "var(--color-text-faint)" }}>
+                  {warehouseName}
+                </span>
+              </div>
             </div>
           </div>
           <button 
@@ -136,6 +153,15 @@ export const SaleModal = ({ product, companyId, onClose, onSaleComplete }: SaleM
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Warehouse Info - Read Only */}
+          <div className="rounded-lg p-2 text-xs flex items-center gap-2"
+            style={{ background: "var(--color-surface-1)", border: "1px solid var(--color-border-soft)" }}>
+            <MdWarehouse size={14} style={{ color: "var(--color-brand-primary-soft)" }} />
+            <span style={{ color: "var(--color-text-secondary)" }}>
+              Selling from: <strong style={{ color: "var(--color-text-primary)" }}>{warehouseName}</strong>
+            </span>
+          </div>
+
           {/* Quantity & Price */}
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -152,7 +178,7 @@ export const SaleModal = ({ product, companyId, onClose, onSaleComplete }: SaleM
                 style={S}
               />
               <p className="text-[10px] mt-0.5" style={{ color: "var(--color-text-faint)" }}>
-                Available: {maxQuantity} units
+                Available at {warehouseName}: {maxQuantity} units
               </p>
             </div>
             <div>
